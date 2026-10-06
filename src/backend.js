@@ -6,6 +6,7 @@ let client,guest=sessionStorage.getItem(guestKey)==='1',readyResolve,mode='login
 const ready=new Promise(resolve=>readyResolve=resolve);
 const redirectTo=new URL('.',location.href).href;
 function humanError(error) {
+  if(/failed to fetch|fetch failed|network|abort|timeout/i.test(error?.message||''))return '连接暂时中断，记录已保存在本机，恢复网络后会继续同步';
   const known={'Invalid login credentials':'邮箱或密码不正确','Email not confirmed':'请先打开邮箱中的确认邮件',
     'User already registered':'此邮箱已有账号，请直接登录','Signup is disabled':'账号注册已关闭，请使用已有练习账号'};
   return known[error?.message]||error?.message||'暂时无法连接，请稍后重试';
@@ -68,7 +69,7 @@ window.CloudBackend={ready,isGuest:()=>guest,email:async()=>(await client?.auth.
     if(guest||!client)throw new Error('登录后开启同步');
     const {data:session,error:authError}=await client.auth.getSession();
     if(authError||!session.session)throw new Error('请重新登录');
-    const {data,error}=await client.rpc('study_sync',{p_changes:method==='POST'?changes:[]});
+    const {data,error}=await client.rpc('study_sync',{p_changes:method==='POST'?changes:[]}).abortSignal(AbortSignal.timeout(20000));
     if(error){if(error.code==='PGRST301')throw new Error('请重新登录');throw new Error(humanError(error));}
     if(!data||!Array.isArray(data.records)||data.userId!==session.session.user.id)throw new Error('同步返回异常，当前记录已保留');
     return data;

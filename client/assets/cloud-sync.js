@@ -7,7 +7,10 @@
   let state=read(journalKey,{userId:null,records:{},pending:{},conflicts:[]});
   let hooks={},timer,busy=false,offline=false,message='',sequence=0;
   state.records||={};state.pending||={};state.conflicts||=[];
-  const same=(a,b)=>JSON.stringify(a??null)===JSON.stringify(b??null);
+  const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?
+    Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
+  // PostgreSQL jsonb can reorder object keys; compare content rather than order.
+  const same=(a,b)=>JSON.stringify(canonical(a??null))===JSON.stringify(canonical(b??null));
   const persist=()=>{try{localStorage.setItem(journalKey,JSON.stringify(state));return true;}catch{message='同步缓存保存失败，请导出完整备份';return false;}};
   const effective=()=>({...Object.fromEntries(Object.entries(state.records).map(([k,r])=>[k,r.value])),
     ...Object.fromEntries(Object.entries(state.pending).map(([k,r])=>[k,r.value]))});
@@ -25,7 +28,9 @@
     for(const key of new Set([...Object.keys(next),...Object.keys(old).filter(owns)])) {
       const v=next[key]??null;
       if(same(old[key],v))continue;
-      state.pending[key]={value:v,version:state.pending[key]?.version??state.records[key]?.version??0,seq:++sequence};
+      // The quiz mutates its session in place. Keep the queued payload immutable
+      // so later answers cannot change a request snapshot while it is in flight.
+      state.pending[key]={value:JSON.parse(JSON.stringify(v)),version:state.pending[key]?.version??state.records[key]?.version??0,seq:++sequence};
     }
     message='';persist();update();clearTimeout(timer);timer=setTimeout(flush,1000);
   }
@@ -41,7 +46,7 @@
     const values=localValues(effective());let changed=false;
     for(const [kind,key] of Object.entries(keys)) {
       const raw=JSON.stringify(values[kind]);
-      if(localStorage.getItem(key)!==raw){localStorage.setItem(key,raw);changed=true;}
+      if(!same(read(key,null),values[kind])){localStorage.setItem(key,raw);changed=true;}
     }
     if(changed)hooks.onRemote?.();
   }
