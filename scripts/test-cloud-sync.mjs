@@ -26,11 +26,15 @@ const sandbox={window:{CloudBackend:backend,addEventListener(){}},document:{quer
 vm.runInNewContext(fs.readFileSync('client/assets/cloud-sync.js','utf8'),sandbox);
 const sync=sandbox.window.CloudSync;
 await sync.ready;
+let rerenders=0;
+sync.bind({onRemote:()=>rerenders++});
 const session={id:'race',answers:{q:{pick:'A',reflection:'第一段'}}};
+localStorage.setItem('qb.active.v1',JSON.stringify(session));
 sync.changed('qb.active.v1',session);
 const flushing=sync.flush();
 const sent=await inflight;
 session.answers.q.reflection='第二段：上传中继续输入';
+localStorage.setItem('qb.active.v1',JSON.stringify(session));
 sync.changed('qb.active.v1',session);
 assert.equal(sent[0].value.answers.q.reflection,'第一段','in-flight snapshot stays immutable');
 release();await flushing;
@@ -38,6 +42,7 @@ assert.equal(records.get('active').value.answers.q.reflection,session.answers.q.
 assert.equal(records.get('active').version,2);
 assert.equal(Object.keys(JSON.parse(saved.get('qb.cloud.journal.v1')).pending).length,0);
 assert.equal(JSON.parse(saved.get('qb.cloud.journal.v1')).conflicts.length,0);
+assert.equal(rerenders,0,'acknowledging local changes must not redraw and collapse the report');
 // Different key order on a subsequent pull must not create a needless write.
 sync.changed('qb.active.v1',JSON.parse(JSON.stringify(session)));
 await sync.flush();
