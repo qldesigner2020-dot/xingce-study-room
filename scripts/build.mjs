@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {build} from 'esbuild';
+const root=process.cwd(),dist=path.resolve(root,'dist');
+if(!fs.existsSync(path.join(root,'client/index.html'))||!dist.startsWith(root+path.sep))throw new Error('Invalid build directory');
+fs.rmSync(dist,{recursive:true,force:true});
+fs.cpSync(path.join(root,'client'),dist,{recursive:true});
+await build({entryPoints:['src/backend.js'],bundle:true,format:'iife',outfile:path.join(dist,'assets/backend.js'),minify:true,target:['es2020'],legalComments:'eof'});
+const config={url:process.env.SUPABASE_URL||'',publishableKey:process.env.SUPABASE_PUBLISHABLE_KEY||''};
+if(config.publishableKey&&!config.publishableKey.startsWith('sb_publishable_'))throw new Error('Only a browser publishable key may be shipped');
+if(config.url&&!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(config.url))throw new Error('Invalid Supabase URL');
+fs.writeFileSync(path.join(dist,'assets/cloud-config.js'),'window.STUDY_CLOUD_CONFIG='+JSON.stringify(config)+';\n');
+fs.writeFileSync(path.join(dist,'.nojekyll'),'');
+const index=path.join(dist,'index.html');
+fs.writeFileSync(index,fs.readFileSync(index,'utf8').replace('<script src="assets/cloud-sync.js"></script>',
+  '<script src="assets/cloud-config.js"></script>\n<script src="assets/backend.js"></script>\n<script src="assets/cloud-sync.js"></script>'));
+console.log('Built GitHub Pages app; cloud configuration: '+(config.url?'configured':'waiting'));
