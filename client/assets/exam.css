@@ -152,7 +152,7 @@ label.check {border-radius:7px;}
 .qmeta .chip.acc {color:var(--accent);}
 .qmeta .btn {border-color:transparent;background:var(--panel-2);}
 .stem,.exam-view .opt .t,.exam-view .opt .k,.exam-view .mat {font-family:var(--paper-font);font-size:var(--paper-size,19px);line-height:1.9;letter-spacing:.025em;color:var(--text);-webkit-font-smoothing:auto;}
-.stem p,.mat p {margin:0 0 14px;text-align:justify;}
+.stem p,.mat p {margin:0 0 14px;text-align:left;}
 .exam-view .opts {gap:8px;margin-top:28px;}
 .exam-view .opt {position:relative;border-color:transparent;border-radius:6px;background:transparent;padding:12px 10px;gap:12px;align-items:flex-start;user-select:text;}
 .exam-view .opt:not(.sel):hover {border-color:var(--border);background:var(--panel-2);}
@@ -167,7 +167,9 @@ label.check {border-radius:7px;}
 .exam-view .opt.excluded .t:has(img.fig)::after {content:"";position:absolute;top:50%;left:0;right:0;height:1.5px;background:#87958b;pointer-events:none;}
 .exclude-btn {position:relative;z-index:3;align-self:center;flex:0 0 auto;padding:4px 8px;border-color:transparent;background:transparent;color:var(--muted);font:12px/1.7 "Microsoft YaHei",sans-serif;margin-left:auto;}
 .exclude-btn:hover,.exclude-btn[aria-pressed="true"] {color:var(--bad);background:var(--bad-soft);border-color:transparent;}
-.exam-blank {display:inline-block;width:4.8em;height:1.1em;border-bottom:1px solid currentColor;vertical-align:baseline;margin:0 .13em;text-decoration:none;}
+.exam-blank {display:inline-block;width:4em;height:1em;line-height:1;border-bottom:1px solid currentColor;vertical-align:baseline;margin:0 .12em;text-decoration:none;}
+.exam-ellipsis {font-size:0;letter-spacing:0;white-space:nowrap;}
+.exam-ellipsis::after {content:"……";font-size:var(--paper-size,19px);letter-spacing:0;}
 .stem u,.mat u {text-underline-offset:.22em;text-decoration-thickness:1px;}
 .qbody.with-mat {gap:30px;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);padding:26px 30px;}
 .exam-view .mat {padding:0 24px 0 0;background:transparent;border:0;border-right:1px solid var(--border);border-radius:0;max-height:65vh;overscroll-behavior:contain;}

@@ -10,7 +10,8 @@
     return 'data:'+mime(path)+';base64,'+images[path];
   }
   function embed(h,images) {
-    return String(h||'').replace(/src=["'](assets\/img\/[^"']+)["']/g,(_,p)=>'src="'+imageUri(p,images)+'"');
+    return String(h||'').replace(/<span\b[^>]*class="exam-ellipsis"[^>]*>[\s\S]*?<\/span>/gi,'……')
+      .replace(/src=["'](assets\/img\/[^"']+)["']/g,(_,p)=>'src="'+imageUri(p,images)+'"');
   }
   function html(documents,images,title) {
     const body=documents.map((doc,di)=>{
@@ -109,7 +110,8 @@
           if(n.nodeType!==1)continue;
           const tag=n.tagName.toLowerCase();
           if(['script','style'].includes(tag))continue;
-          if(n.classList.contains('exam-blank')) {text.push({text:'________',...format});continue;}
+            if(n.classList.contains('exam-blank')) {text.push({text:'________',...format});continue;}
+            if(n.classList.contains('exam-ellipsis')) {text.push({text:'……',...format});continue;}
           if(tag==='br') {text.push({text:'\n',...format});continue;}
           if(tag==='img') {
             const p=n.getAttribute('src'),im=imageInfo[p];if(!im)throw new Error('PDF 图片缺失：'+p);

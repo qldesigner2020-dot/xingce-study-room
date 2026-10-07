@@ -385,6 +385,7 @@ function exportRows(sess, questions, scope) {
 
 const stripTags = (h) =>
   String(h || '')
+    .replace(/<span\b[^>]*class="exam-ellipsis"[^>]*>[\s\S]*?<\/span>/gi, '……')
     .replace(/<span\b[^>]*class="exam-blank"[^>]*>[\s\S]*?<\/span>/gi, '________')
     .replace(/<\/(p|div|tr|li|h\d)>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
@@ -400,6 +401,7 @@ const questionExcerpt = q => stripTags(q.stem).replace(/!\[[^\]]*\]\([^)]+\)/g, 
 function htmlToMd(html, indent = '') {
   // 保留段落结构，图片转 Markdown 语法
   return String(html || '')
+    .replace(/<span\b[^>]*class="exam-ellipsis"[^>]*>[\s\S]*?<\/span>/gi, '……')
     .replace(/<span\b[^>]*class="exam-blank"[^>]*>[\s\S]*?<\/span>/gi, '________')
     .split(/<\/p>|<br\s*\/?>/i)
     .map((seg) =>

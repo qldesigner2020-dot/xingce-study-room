@@ -12,6 +12,20 @@
   // PostgreSQL jsonb can reorder object keys; compare content rather than order.
   const same=(a,b)=>JSON.stringify(canonical(a??null))===JSON.stringify(canonical(b??null));
   const persist=()=>{try{localStorage.setItem(journalKey,JSON.stringify(state));return true;}catch{message='同步缓存保存失败，请导出完整备份';return false;}};
+  // Every tab shares this durable journal. Never commit a tab's old snapshot
+  // over changes queued or acknowledged by another tab during a network await.
+  function refreshJournal() {
+    const latest=read(journalKey,null);
+    if(!latest?.records||!latest.pending)return true;
+    if(state.userId&&latest.userId&&state.userId!==latest.userId) {
+      message='账号已在另一标签切换，请刷新页面';return false;
+    }
+    state=latest;state.conflicts||=[];
+    sequence=Math.max(sequence,...Object.values(state.pending).map(p=>p.seq||0));
+    return true;
+  }
+  const exclusive=fn=>typeof navigator!=='undefined'&&navigator.locks?.request?
+    navigator.locks.request('xingce-cloud-sync',fn):fn();
   const effective=()=>({...Object.fromEntries(Object.entries(state.records).map(([k,r])=>[k,r.value])),
     ...Object.fromEntries(Object.entries(state.pending).map(([k,r])=>[k,r.value]))});
   function split(kind,value) {
@@ -22,6 +36,7 @@
   }
   function changed(storageKey,value) {
     if(window.CloudBackend.isGuest())return;
+    if(!refreshJournal())return;
     const kind=Object.keys(keys).find(k=>keys[k]===storageKey);if(!kind)return;
     const next=split(kind,value),old=effective();
     const owns=k=>kind==='sessions'?k.startsWith('session:'):kind==='favorites'?k.startsWith('favorite:'):kind==='wrong'?k.startsWith('wrong:'):k===kind;
@@ -50,8 +65,14 @@
     }
     if(changed)hooks.onRemote?.();
   }
-  function apply(data) {
+  function apply(data,refresh=true) {
+    if(refresh&&!refreshJournal())return;
     const remote=Object.fromEntries(data.records.map(r=>[r.key,r]));
+    // A late GET can predate another tab's successful POST. Versions, including
+    // deletion tombstones, only move forward; an absent old row is not a delete.
+    if(!state.userId||state.userId===data.userId)for(const [key,row] of Object.entries(state.records)) {
+      if(!remote[key]||row.version>remote[key].version)remote[key]=row;
+    }
     // Never let a different device silently replace a running exam.
     if(hooks.isBusy?.()&&remote.active&&state.records.active?.version!==remote.active.version&&!state.pending.active) {
       const local=read(keys.active,null);
@@ -77,9 +98,12 @@
     document.querySelectorAll('[data-cloud-panel-status]').forEach(el=>el.textContent=status());
   }
   async function flush() {
+    if(!refreshJournal())return;
     if(window.CloudBackend.isGuest()||busy||state.conflicts.length)return;
     busy=true;update();
     try {
+      await exclusive(async()=>{
+      if(!refreshJournal()||state.conflicts.length)return;
       while(Object.keys(state.pending).length) {
         const batch=[];let size=0;
         for(const [key,p] of Object.entries(state.pending)) {
@@ -90,6 +114,7 @@
         }
         const sent=Object.fromEntries(batch.map(r=>[r.key,{...state.pending[r.key]}]));
         const data=await request('POST',batch);
+        if(!refreshJournal())return;
         // New keystrokes can arrive during the request. Retain them, but advance their base version.
         const versions=Object.fromEntries(data.records.map(r=>[r.key,r]));
         for(const [key,p] of Object.entries(sent)) {
@@ -99,19 +124,22 @@
             else local.version=remote.version;
           }
         }
-        offline=false;message='';apply(data);
+        offline=false;message='';apply(data,false);
         if(state.conflicts.length)break;
       }
-    } catch(error){offline=true;message=['TypeError','AbortError'].includes(error.name)?'':error.message;persist();}
+      });
+    } catch(error){refreshJournal();offline=true;message=['TypeError','AbortError'].includes(error.name)?'':error.message;persist();}
     finally {busy=false;update();}
   }
   async function pull() {
+    if(!refreshJournal())return;
     if(window.CloudBackend.isGuest()||busy||hooks.isBusy?.()||document.activeElement?.matches('input,textarea,select'))return;
     if(Object.keys(state.pending).length)return flush();
     busy=true;update();
-    try {apply(await request());offline=false;message='';}
+    try {await exclusive(async()=>{if(refreshJournal())apply(await request());});offline=false;message='';}
     catch(error){offline=true;if(error.message==='请重新登录')message=error.message;}
     finally {busy=false;update();}
+    if(Object.keys(state.pending).length&&!state.conflicts.length)flush();
   }
   function panel() {
     document.getElementById('cloud-panel')?.remove();
@@ -160,6 +188,7 @@
     if(auth.guest)return true;
     try {
       const data=await request();
+      if(!state.userId||state.userId===data.userId)refreshJournal();
       if(state.userId&&state.userId!==data.userId) {
         localStorage.setItem('qb.cloud.previous-account',JSON.stringify({state,cache:localValues(effective())}));
         state={userId:data.userId,records:{},pending:{},conflicts:[]};
@@ -171,7 +200,7 @@
         if(cache.sessions.length||cache.active||Object.keys(cache.favorites).length||Object.keys(cache.wrong).length)
           localStorage.setItem('qb.cloud.migration-backup.v1',JSON.stringify({kind:'xingce-backup',version:1,exportedAt:Date.now(),...cache}));
       }
-      apply(data);offline=false;flush();return true;
+      apply(data,false);offline=false;flush();return true;
     } catch(error) {
       if(error.message==='请重新登录') {
         window.CloudBackend.signIn();
@@ -183,6 +212,11 @@
   const safe=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   window.CloudSync={changed,bind:h=>{hooks=h;update();},statusHtml:()=>'<button class="btn btn-sm" data-cloud-status>'+safe(status())+'</button>',ready:init(),flush};
   setInterval(pull,30000);
+  window.addEventListener('storage',e=>{
+    if(e.key!==journalKey||window.CloudBackend.isGuest()||!refreshJournal())return;
+    if(!busy&&!hooks.isBusy?.())materialize();
+    update();
+  });
   window.addEventListener('online',()=>{offline=false;flush();pull();});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)flush();else pull();});
   window.CloudSync.ready.then(ok=>{
