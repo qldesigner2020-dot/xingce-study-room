@@ -69,6 +69,15 @@ assert.ok(rare);await pdf.root.DocumentExport.pdf([{title:String.fromCodePoint(r
 assert.equal(definitions.at(-1).defaultStyle.font,'ExamFull');assert.equal(loads.at(-1),'assets/vendor/pdf-fonts.js');
 await pdf.root.DocumentExport.pdf([{title:'常用字',questions:[]}],{},loader);
 assert.equal(definitions.at(-1).defaultStyle.font,'ExamLite');
+// The subset must start downloading before the PDF library finishes loading.
+const parallel=sandbox();vm.runInNewContext(fontSource,parallel.box);vm.runInNewContext(documentSource,parallel.box);
+const parallelLoads=[];let finishLibrary;
+const preparing=parallel.root.DocumentExport.preparePdf([{title:'练习',questions:[]}],async src=>{
+  parallelLoads.push(src);
+  if(src.endsWith('pdfmake.min.js'))await new Promise(resolve=>finishLibrary=()=>{parallel.root.pdfMake={fonts:{}};resolve();});
+  else if(src.endsWith('pdf-fonts-lite.js'))parallel.root.QB_PDF_LITE_FONTS={'Exam-Regular.woff':'test-normal','Exam-Bold.woff':'test-bold'};
+});
+await tick();assert.ok(parallelLoads.includes('assets/vendor/pdf-fonts-lite.js'));finishLibrary();await preparing;
 // Every existing bank character supported by the original font must be retained.
 const missing=new Set();
 for(const directory of ['client/data/papers','client/data/pools','client/assets']) {

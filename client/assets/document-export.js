@@ -38,7 +38,7 @@
     return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title><style>'+
       'body{margin:0;background:#eaf0eb;color:#25362c;font:17px/1.85 "SimSun","Songti SC",serif}main{max-width:760px;margin:24px auto;padding:40px;background:#f5f7f3}h1{text-align:center;font:700 24px/1.6 "Microsoft YaHei",sans-serif}h2{font:700 22px/1.6 "Microsoft YaHei",sans-serif;margin:30px 0 18px;padding-bottom:8px;border-bottom:2px solid #3d6552;break-after:avoid}h3{font-size:16px;margin:0 0 8px;break-after:avoid}.sheet-info{display:flex;flex-wrap:wrap;justify-content:space-between;gap:14px;padding:14px 0;border-bottom:1px solid #bfcdbf;font-size:15px}.stats{padding:14px 0;border-bottom:1px solid #d6dfd5}.stats p{font-size:15px;margin:2px 0}.material{margin:16px 0 24px}.question{margin:22px 0 32px}.stem,.option{display:flex;gap:8px}.number{min-width:24px}.stem>div,.option>div{flex:1;min-width:0}.options{margin:12px 0 0 32px}.option{margin:8px 0;break-inside:avoid}p{margin:4px 0 10px}img{max-width:100%;height:auto;vertical-align:middle;break-inside:avoid}img.tex{max-height:1.6em;width:auto}.exam-blank{display:inline-block;min-width:4em;height:1em;border-bottom:1px solid;vertical-align:baseline}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #888;padding:4px}tr{break-inside:avoid}.review{margin:18px 0 0 32px;padding:16px 0 0;border-top:1px solid #bfcdbf;font-size:15px}.answer-line{display:flex;flex-wrap:wrap;gap:12px;font-weight:600}.self-assessment{margin-top:12px;color:#526359}.personal{margin-top:14px;padding-left:12px;border-left:2px solid #bfcdbf}.personal p{white-space:pre-wrap;overflow-wrap:anywhere}.explanation{margin-top:18px}.printbar{text-align:center;padding:16px;font:16px/1.6 "Microsoft YaHei",sans-serif}.printbar button{font:inherit;background:#3d6552;color:white;border:0;border-radius:8px;padding:10px 24px;cursor:pointer}.next-document{margin-top:50px;break-before:page}@page{size:A4;margin:17mm 16mm}@media(max-width:800px){main{margin:0;padding:20px}.options,.review{margin-left:20px}}@media print{body,main{background:white;color:black}body{font-size:12pt;line-height:1.8}main{padding:0;margin:0;max-width:none}.printbar{display:none}h1{font-size:18pt}h2{font-size:15pt;border-color:#333}h3{font-size:11pt}.sheet-info,.stats p,.review{font-size:10.5pt}.question{margin:18px 0 28px}img{max-height:230mm}.self-assessment{color:#333}}</style></head><body><div class="printbar"><button onclick="window.print()">打印</button></div><main>'+body+'</main></body></html>';
   }
-  let ready;
+  let libraryReady,coverageReady;
   const fontReady={},pdfCache=new Map();
   function inRanges(cp,ranges) {
     let lo=0,hi=ranges.length-1;
@@ -54,16 +54,18 @@
     });
   }
   function preparePdf(documents,loadScript,progress=()=>{}) {
-    if(!ready)ready=Promise.all([
-      root.pdfMake?null:loadScript('assets/vendor/pdfmake.min.js'),
-      root.QB_PDF_FONT_COVERAGE?null:loadScript('assets/vendor/pdf-font-coverage.js')
-    ]).catch(e=>{ready=null;throw e;});
-    return ready.then(()=>{
+    if(!libraryReady)libraryReady=(root.pdfMake?Promise.resolve():loadScript('assets/vendor/pdfmake.min.js')).catch(e=>{libraryReady=null;throw e;});
+    if(!coverageReady)coverageReady=(root.QB_PDF_FONT_COVERAGE?Promise.resolve():loadScript('assets/vendor/pdf-font-coverage.js')).catch(e=>{coverageReady=null;throw e;});
+    return Promise.all([libraryReady,coverageReady.then(()=>{
       const full=needsFullFont(documents),font=full?'ExamFull':'ExamLite',family='PDF'+font;
       if(!fontReady[font])fontReady[font]=(async()=>{
         progress(full?'正在加载完整字体（复盘中含少见字）…':'正在加载 PDF 字体…');
         const variable=full?'QB_PDF_FONTS':'QB_PDF_LITE_FONTS';
+        // The legacy full pack registers itself; the subset can download while
+        // pdfmake is still loading, avoiding another network round trip.
+        if(full)await libraryReady;
         if(!root[variable])await loadScript('assets/vendor/'+(full?'pdf-fonts.js':'pdf-fonts-lite.js'));
+        await libraryReady;
         const data=root[variable],prefix=full?'':'Lite-';
         const vfs=Object.fromEntries(Object.entries(data).map(([k,v])=>[prefix+k,v]));
         root.pdfMake.fonts={...root.pdfMake.fonts,[font]:{normal:prefix+'Exam-Regular.woff',bold:prefix+'Exam-Bold.woff',italics:prefix+'Exam-Regular.woff',bolditalics:prefix+'Exam-Bold.woff'}};
@@ -74,7 +76,7 @@
         return {font,family,vfs};
       })().catch(e=>{delete fontReady[font];throw e;});
       return fontReady[font];
-    });
+    })]).then(([,font])=>font);
   }
   function pdf(documents,images,loadScript,progress=()=>{}) {
     // Content, scope, explanations, favorites and personal reflections all enter
