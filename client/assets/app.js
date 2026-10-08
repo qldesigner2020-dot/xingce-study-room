@@ -1433,7 +1433,6 @@ async function render() {
     const viewKey = `${route.name}:${route.args.join('/')}:${S.session?.index ?? ''}`;
     if (viewKey !== lastViewKey) { window.scrollTo({ top: 0 }); lastViewKey = viewKey; }
     if (viewKey === oldViewKey && $('.mat')) $('.mat').scrollTop = materialScroll;
-    if(route.name==='report')warmPdfReport(route.args[0]);
   } catch (e) {
     console.error(e);
     app.innerHTML = `${topbar('')}${emptyBox(ExamTools.icon('file'), '出错了', esc(e.message))}`;
@@ -1996,7 +1995,7 @@ async function pickSessions(ids) {
 
 async function doExport(ids, kind, how) {
   if (!ids.length) return toast('没有选中记录');
-  toast(kind==='pdf'?'正在准备 PDF 字体与图片…':'正在生成…');
+  toast(kind==='pdf'?'正在准备 PDF 与图片…':'正在生成…');
   const sessions = await prepareForExport(await pickSessions(ids));
   if (!sessions.length) return toast('没有可导出的记录');
   const opts = { expl: SETTINGS.exportExpl, material: SETTINGS.exportMat, scope: route.name === 'report' ? V.reportScope || 'all' : 'all' };
@@ -2074,20 +2073,6 @@ function reportDocuments(sessions, opts) {
       })};
   });
 }
-let pdfWarmupTimer=0,pdfWarmupId='';
-function warmPdfReport(sid) {
-  if(pdfWarmupId===sid)return;
-  clearTimeout(pdfWarmupTimer);
-  pdfWarmupTimer=setTimeout(async()=>{
-    if(route.name!=='report'||route.args[0]!==sid)return;
-    pdfWarmupId=sid;
-    try {
-      const sess=getSessions().find(s=>s.id===sid);if(!sess)return;
-      const prepared=await prepareForExport([sess]);
-      await DocumentExport.preparePdf(reportDocuments(prepared,{expl:SETTINGS.exportExpl,material:SETTINGS.exportMat,scope:V.reportScope||'all'}),loadScript);
-    } catch {if(pdfWarmupId===sid)pdfWarmupId='';}
-  },800);
-}
 async function pdfAction(button, action) {
   if(button.disabled)return;
   const label=button.textContent;
@@ -2096,7 +2081,7 @@ async function pdfAction(button, action) {
   finally {button.disabled=false;button.textContent=label;}
 }
 async function exportQuestions(source, id, preview, format='html') {
-  toast(format==='pdf'?'正在准备 PDF 字体与图片…':'正在生成试题与图片…');
+  toast(format==='pdf'?'正在准备 PDF 与图片…':'正在生成试题与图片…');
   let title, questions;
   if (source === 'paper') {
     const pf = await loadPaper(id);

@@ -38,45 +38,70 @@
     return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(title)+'</title><style>'+
       'body{margin:0;background:#eaf0eb;color:#25362c;font:17px/1.85 "SimSun","Songti SC",serif}main{max-width:760px;margin:24px auto;padding:40px;background:#f5f7f3}h1{text-align:center;font:700 24px/1.6 "Microsoft YaHei",sans-serif}h2{font:700 22px/1.6 "Microsoft YaHei",sans-serif;margin:30px 0 18px;padding-bottom:8px;border-bottom:2px solid #3d6552;break-after:avoid}h3{font-size:16px;margin:0 0 8px;break-after:avoid}.sheet-info{display:flex;flex-wrap:wrap;justify-content:space-between;gap:14px;padding:14px 0;border-bottom:1px solid #bfcdbf;font-size:15px}.stats{padding:14px 0;border-bottom:1px solid #d6dfd5}.stats p{font-size:15px;margin:2px 0}.material{margin:16px 0 24px}.question{margin:22px 0 32px}.stem,.option{display:flex;gap:8px}.number{min-width:24px}.stem>div,.option>div{flex:1;min-width:0}.options{margin:12px 0 0 32px}.option{margin:8px 0;break-inside:avoid}p{margin:4px 0 10px}img{max-width:100%;height:auto;vertical-align:middle;break-inside:avoid}img.tex{max-height:1.6em;width:auto}.exam-blank{display:inline-block;min-width:4em;height:1em;border-bottom:1px solid;vertical-align:baseline}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #888;padding:4px}tr{break-inside:avoid}.review{margin:18px 0 0 32px;padding:16px 0 0;border-top:1px solid #bfcdbf;font-size:15px}.answer-line{display:flex;flex-wrap:wrap;gap:12px;font-weight:600}.self-assessment{margin-top:12px;color:#526359}.personal{margin-top:14px;padding-left:12px;border-left:2px solid #bfcdbf}.personal p{white-space:pre-wrap;overflow-wrap:anywhere}.explanation{margin-top:18px}.printbar{text-align:center;padding:16px;font:16px/1.6 "Microsoft YaHei",sans-serif}.printbar button{font:inherit;background:#3d6552;color:white;border:0;border-radius:8px;padding:10px 24px;cursor:pointer}.next-document{margin-top:50px;break-before:page}@page{size:A4;margin:17mm 16mm}@media(max-width:800px){main{margin:0;padding:20px}.options,.review{margin-left:20px}}@media print{body,main{background:white;color:black}body{font-size:12pt;line-height:1.8}main{padding:0;margin:0;max-width:none}.printbar{display:none}h1{font-size:18pt}h2{font-size:15pt;border-color:#333}h3{font-size:11pt}.sheet-info,.stats p,.review{font-size:10.5pt}.question{margin:18px 0 28px}img{max-height:230mm}.self-assessment{color:#333}}</style></head><body><div class="printbar"><button onclick="window.print()">打印</button></div><main>'+body+'</main></body></html>';
   }
-  let libraryReady,coverageReady;
-  const fontReady={},pdfCache=new Map();
-  function inRanges(cp,ranges) {
-    let lo=0,hi=ranges.length-1;
-    while(lo<=hi) {const mid=(lo+hi)>>1,[start,end]=ranges[mid];
-      if(cp<start)hi=mid-1;else if(cp>end)lo=mid+1;else return true;}
-    return false;
+  let ready;
+  const pdfCache=new Map(),family='"SimSun","Songti SC","Microsoft YaHei",serif';
+  function preparePdf(documents,loadScript) {
+    if(!ready)ready=Promise.all([
+      root.pdfMake?null:loadScript('assets/vendor/pdfmake.min.js'),
+      root.QB_PDF_TEXT_LAYER?null:loadScript('assets/pdf-text-layer.js')
+    ]).then(()=>({font:'TextLayer',family,vfs:{'text-regular.woff':root.QB_PDF_TEXT_LAYER.regular,'text-bold.woff':root.QB_PDF_TEXT_LAYER.bold},
+      fonts:{TextLayer:{normal:'text-regular.woff',bold:'text-bold.woff',italics:'text-regular.woff',bolditalics:'text-bold.woff'}}
+    })).catch(e=>{ready=null;throw e;});
+    return ready;
   }
-  function needsFullFont(documents) {
-    const coverage=root.QB_PDF_FONT_COVERAGE;
-    return [...new Set(JSON.stringify(documents))].some(char=>{
-      const cp=char.codePointAt(0);
-      return !inRanges(cp,coverage.subset)&&inRanges(cp,coverage.full);
-    });
+  const glyphCache=new Map();
+  function systemGlyph(text,font,color) {
+    const key=font+'|'+color+'|'+text;
+    if(glyphCache.has(key))return glyphCache.get(key);
+    const canvas=document.createElement('canvas'),pad=4;
+    let ctx=canvas.getContext('2d');ctx.font=font;const advance=ctx.measureText(text).width;
+    canvas.width=Math.max(1,Math.ceil(advance)+pad*2);canvas.height=104;
+    ctx=canvas.getContext('2d');ctx.font=font;ctx.textBaseline='alphabetic';ctx.fillStyle=color;
+    ctx.fillText(text,pad,64+pad);
+    const glyph={uri:canvas.toDataURL('image/png'),w:canvas.width,h:canvas.height,pad,advance};
+    glyphCache.set(key,glyph);if(glyphCache.size>8192)glyphCache.delete(glyphCache.keys().next().value);
+    canvas.width=canvas.height=0;return glyph;
   }
-  function preparePdf(documents,loadScript,progress=()=>{}) {
-    if(!libraryReady)libraryReady=(root.pdfMake?Promise.resolve():loadScript('assets/vendor/pdfmake.min.js')).catch(e=>{libraryReady=null;throw e;});
-    if(!coverageReady)coverageReady=(root.QB_PDF_FONT_COVERAGE?Promise.resolve():loadScript('assets/vendor/pdf-font-coverage.js')).catch(e=>{coverageReady=null;throw e;});
-    return Promise.all([libraryReady,coverageReady.then(()=>{
-      const full=needsFullFont(documents),font=full?'ExamFull':'ExamLite',family='PDF'+font;
-      if(!fontReady[font])fontReady[font]=(async()=>{
-        progress(full?'正在加载完整字体（复盘中含少见字）…':'正在加载 PDF 字体…');
-        const variable=full?'QB_PDF_FONTS':'QB_PDF_LITE_FONTS';
-        // The legacy full pack registers itself; the subset can download while
-        // pdfmake is still loading, avoiding another network round trip.
-        if(full)await libraryReady;
-        if(!root[variable])await loadScript('assets/vendor/'+(full?'pdf-fonts.js':'pdf-fonts-lite.js'));
-        await libraryReady;
-        const data=root[variable],prefix=full?'':'Lite-';
-        const vfs=Object.fromEntries(Object.entries(data).map(([k,v])=>[prefix+k,v]));
-        root.pdfMake.fonts={...root.pdfMake.fonts,[font]:{normal:prefix+'Exam-Regular.woff',bold:prefix+'Exam-Bold.woff',italics:prefix+'Exam-Regular.woff',bolditalics:prefix+'Exam-Bold.woff'}};
-        if(typeof FontFace!=='undefined') {
-          const face=new FontFace(family,'url(data:font/woff;base64,'+data['Exam-Regular.woff']+')');
-          await face.load();document.fonts.add(face);
+  async function systemText(stream,progress) {
+    // Keep the real Unicode text and original pictures in the PDF. Draw only
+    // visible letters with the browser's installed fonts; no CJK font download.
+    const pages=stream._pdfMakePages;
+    const measuring=document.createElement('canvas').getContext('2d');let lastFont='';
+    const segmenter=typeof Intl.Segmenter==='function'?new Intl.Segmenter('zh',{granularity:'grapheme'}):null;
+    for(let i=0;i<pages.length;i++) {
+      stream.switchToPage(i);
+      stream.save().opacity(1);
+      for(const node of pages[i].items) {
+        if(node.type!=='line')continue;
+        const line=node.item,baseline=line.y+line.getAscenderHeight();
+        for(const inline of line.inlines) {
+          if(!inline.text?.trim())continue;
+          const font=(inline.italics?'italic ':'')+((inline.bold||/Bold/.test(inline.font.name))?'bold ':'')+'64px '+family;
+          const y=baseline+(inline.sup?-0.75*inline.fontSize:0)+(inline.sub?0.35*inline.fontSize:0);
+          const parts=segmenter?[...segmenter.segment(inline.text)].map(s=>s.segment):[...inline.text];
+          const sy=inline.fontSize/64;
+          if(parts.length===1) {
+            const glyph=systemGlyph(parts[0],font,inline.color||'#202720');
+            if(glyph.advance) {const sx=inline.width/glyph.advance;
+              stream.image(glyph.uri,line.x+inline.x-glyph.pad*sx,y-(64+glyph.pad)*sy,{width:glyph.w*sx,height:glyph.h*sy});}
+            continue;
+          }
+          if(font!==lastFont){measuring.font=font;lastFont=font;}
+          const measured=measuring.measureText(inline.text).width;if(!measured)continue;
+          const sx=inline.width/measured;
+          let prefix='';
+          for(const text of parts) {
+            const x=line.x+inline.x+measuring.measureText(prefix).width*sx;prefix+=text;
+            if(!text.trim())continue;
+            const glyph=systemGlyph(text,font,inline.color||'#202720');
+            stream.image(glyph.uri,x-glyph.pad*sx,y-(64+glyph.pad)*sy,{width:glyph.w*sx,height:glyph.h*sy});
+          }
         }
-        return {font,family,vfs};
-      })().catch(e=>{delete fontReady[font];throw e;});
-      return fontReady[font];
-    })]).then(([,font])=>font);
+      }
+      stream.restore();
+      progress('正在生成 PDF（'+(i+1)+' / '+pages.length+' 页）…');
+      await new Promise(resolve=>setTimeout(resolve,0));
+    }
   }
   function pdf(documents,images,loadScript,progress=()=>{}) {
     // Content, scope, explanations, favorites and personal reflections all enter
@@ -93,7 +118,7 @@
     return promise;
   }
   async function generatePdf(documents,images,loadScript,progress) {
-    const {font,family,vfs}=await preparePdf(documents,loadScript,progress);
+    const {font,family,vfs,fonts}=await preparePdf(documents,loadScript);
     progress('正在处理 PDF 图片…');
     const imageInfo={};
     await root.ExportTools.mapLimit(Object.keys(images),4,async path=>{
@@ -128,7 +153,7 @@
       };
       for(const run of runs) {
         const size=run.fontSize||fontSize;
-        if(!run.image)measuring.font=size+'px "'+family+'","SimSun",serif';
+        if(!run.image)measuring.font=size+'px '+family;
         const parts=run.image?[run]:[...run.text].map(char=>{
           const key=size+':'+char;
           if(!widths.has(key))widths.set(key,measuring.measureText(char).width*1.015);
@@ -237,16 +262,13 @@
       content};
     return new Promise((resolve,reject)=>{
       try {
-        // pdfmake 0.2 replaces its global VFS when a new font pack is loaded.
-        // Bind exactly this export's fonts and bytes, so full/subset exports can
-        // safely alternate. All fonts/images are local bytes; no URL resolver.
-        const stream=root.pdfMake.createPdf(def,null,{[font]:root.pdfMake.fonts[font]},vfs).getStream();
+        const stream=root.pdfMake.createPdf(def,null,fonts,vfs).getStream({bufferPages:true});
         const chunks=[];let size=0;
         stream.on('data',chunk=>{chunks.push(chunk);size+=chunk.length;});
         stream.on('error',reject);
         stream.on('end',()=>{const bytes=new Uint8Array(size);let offset=0;
           for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}resolve(bytes);});
-        stream.end();
+        systemText(stream,progress).then(()=>stream.end(),reject);
       }catch(e){reject(e);}
     });
   }
