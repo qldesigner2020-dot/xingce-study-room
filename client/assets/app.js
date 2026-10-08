@@ -1757,7 +1757,7 @@ const ACT = {
     catch (error) { if (preview && !preview.closed) preview.close(); throw error; }
   },
   async 'download-questions'(e, el) { await exportQuestions(el.dataset.source, el.dataset.id); },
-  async 'download-question-pdf'(e, el) { await exportQuestions(el.dataset.source, el.dataset.id, null, 'pdf'); },
+  async 'download-question-pdf'(e, el) { await pdfAction(el,()=>exportQuestions(el.dataset.source, el.dataset.id, null, 'pdf')); },
   rscope(e, el) { V.reportScope = el.dataset.v; SETTINGS.exportScope = el.dataset.v; saveSettings(); render(); },
   'showall-expl'(e, el) { V.showAllExpl = el.checked; render(); },
   set(e, el) { SETTINGS[el.dataset.k] = el.checked; saveSettings(); el.closest('label')?.classList.toggle('on', el.checked); },
@@ -1766,7 +1766,7 @@ const ACT = {
   async 'download-md'(e, el) { await doExport([el.dataset.id], 'md', 'download'); },
   async 'download-zip'(e,el) { await doExport([el.dataset.id],'zip','download'); },
   async 'download-html'(e,el) { await doExport([el.dataset.id],'html','download'); },
-  async 'download-pdf'(e,el) { await doExport([el.dataset.id],'pdf','download'); },
+  async 'download-pdf'(e,el) { await pdfAction(el,()=>doExport([el.dataset.id],'pdf','download')); },
   async 'print-export'(e,el) {
     const preview=window.open('','_blank');
     if(preview) {preview.document.title='正在生成带图报告';preview.document.body.textContent='正在生成带图报告…';}
@@ -2013,15 +2013,17 @@ async function doExport(ids, kind, how) {
     const documents=kind==='zip'?null:reportDocuments(sessions,opts);
     const imageSource=documents?documents.flatMap(d=>d.questions.flatMap(q=>
       [q.material,q.stem,...q.options.map(o=>o.t),q.result?.explanation||''].map(h=>htmlToMd(h)))).join('\n'):md;
-    const images=await ExportTools.images(imageSource,loadScript);
+    const [images]=await Promise.all([
+      ExportTools.images(imageSource,loadScript),
+      kind==='pdf'?DocumentExport.preparePdf(documents,loadScript,message=>toast(message,60000)):null
+    ]);
     if(kind==='zip') {
       const files=[{name:name+'.md',data:md},...Object.entries(images).map(([path,data])=>({name:path,data:ExportTools.decode(data)}))];
       download(name+'.zip',ExportTools.zip(files),'application/zip');
       toast('已下载 Markdown 与图片，解压后打开',3500);return;
     }
     if(kind==='pdf') {
-      toast('正在排版 PDF，首次导出需加载字体…',60000);
-      const bytes=await DocumentExport.pdf(documents,images,loadScript);
+      const bytes=await DocumentExport.pdf(documents,images,loadScript,message=>toast(message,60000));
       download(name+'_复盘.pdf',bytes,'application/pdf');toast('已下载复盘 PDF');return;
     }
     const html=DocumentExport.html(documents,images,name);
@@ -2071,6 +2073,13 @@ function reportDocuments(sessions, opts) {
       })};
   });
 }
+async function pdfAction(button, action) {
+  if(button.disabled)return;
+  const label=button.textContent;
+  button.disabled=true;button.textContent='生成中…';
+  try {return await action();}
+  finally {button.disabled=false;button.textContent=label;}
+}
 async function exportQuestions(source, id, preview, format='html') {
   toast('正在生成试题与图片…');
   let title, questions;
@@ -2092,12 +2101,14 @@ async function exportQuestions(source, id, preview, format='html') {
     return toast('当前范围没有题目');
   }
   const md = questions.map(q => [q.material,q.stem,...q.options.map(o => o.t)].map(h => htmlToMd(h)).join('\n')).join('\n');
-  const images = await ExportTools.images(md, loadScript);
   const name = safeName(title) + '_空白试题';
   const documents=[{title,questions,report:false}];
+  const [images]=await Promise.all([
+    ExportTools.images(md, loadScript),
+    format==='pdf'?DocumentExport.preparePdf(documents,loadScript,message=>toast(message,60000)):null
+  ]);
   if(format==='pdf') {
-    toast('正在排版 PDF，首次导出需加载字体…',60000);
-    const bytes=await DocumentExport.pdf(documents,images,loadScript);
+    const bytes=await DocumentExport.pdf(documents,images,loadScript,message=>toast(message,60000));
     download(name+'.pdf',bytes,'application/pdf');toast('已下载试题 PDF');return;
   }
   const html = DocumentExport.html(documents, images, name);

@@ -40,20 +40,40 @@
     for(const chunk of [...chunks,...dirs,end]) {out.set(chunk,pos);pos+=chunk.length;}
     return out;
   }
+  const imageCache=new Map();
+  let imageCacheSize=0;
+  async function mapLimit(items, limit, fn) {
+    const out=new Array(items.length);let next=0;
+    await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{
+      while(next<items.length) {const i=next++;out[i]=await fn(items[i],i);}
+    }));
+    return out;
+  }
+  function hostedImage(path) {
+    let entry=imageCache.get(path);
+    if(entry) {imageCache.delete(path);imageCache.set(path,entry);return entry.promise;}
+    entry={size:0};imageCache.set(path,entry);
+    entry.promise=(async()=>{
+      const response=await fetch(path,{credentials:'same-origin',cache:'force-cache'});
+      if(!response.ok||response.headers.get('content-type')?.includes('text/html'))
+        throw new Error('图片读取失败，请重试：'+path);
+      const bytes=new Uint8Array(await response.arrayBuffer());
+      let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+      const data=btoa(binary);entry.size=data.length;imageCacheSize+=entry.size;
+      // Bound retained base64 data; never evict an in-flight request.
+      for(const [key,value] of imageCache) {
+        if(imageCacheSize<=24*1024*1024&&imageCache.size<=128)break;
+        if(value.size) {imageCache.delete(key);imageCacheSize-=value.size;}
+      }
+      return data;
+    })().catch(error=>{if(imageCache.get(path)===entry)imageCache.delete(path);throw error;});
+    return entry.promise;
+  }
   async function images(md, loadScript) {
     const paths=imagePaths(md); if(!paths.length) return {};
     if(root.CloudSync && /^https?:$/.test(root.location?.protocol||'')) {
       // Hosted builds read the original same-origin images; no duplicate base64 packs.
-      const out={};
-      for(const path of paths) {
-        const response=await fetch(path,{credentials:'same-origin',cache:'force-cache'});
-        if(!response.ok||response.headers.get('content-type')?.includes('text/html'))
-          throw new Error('图片读取失败，请重新登录后重试：'+path);
-        const bytes=new Uint8Array(await response.arrayBuffer());
-        let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
-        out[path]=btoa(binary);
-      }
-      return out;
+      return Object.fromEntries(await mapLimit(paths,4,async path=>[path,await hostedImage(path)]));
     }
     if(!root.QB_EXPORT_IMAGE_INDEX) await loadScript('data/export-images/index.js');
     const index=root.QB_EXPORT_IMAGE_INDEX;
@@ -129,7 +149,7 @@
       '</title><style>body{margin:0;background:#eaf0eb;color:#25362c;font:17px/1.85 "SimSun","Songti SC",serif}main{max-width:760px;margin:24px auto;padding:40px;background:#f5f7f3}h1{text-align:center;font-size:24px;line-height:1.6}h2{font:700 22px/1.6 "Microsoft YaHei",sans-serif;border-bottom:2px solid #3d6552;padding-bottom:8px;margin:30px 0 18px;break-after:avoid}h3{font-size:16px;margin:0 0 8px;break-after:avoid}.sheet-info{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between;font-size:15px;padding:14px 0;border-bottom:1px solid #bfcdbf}.material{margin:12px 0 22px}.question{margin:22px 0 30px}.stem,.option{display:flex;gap:8px}.stem>div,.option>div{flex:1;min-width:0}.stem{break-inside:avoid}.number{min-width:24px}.options{margin:12px 0 0 32px}.option{margin:8px 0;break-inside:avoid}p{margin:4px 0 10px}img{max-width:100%;height:auto;vertical-align:middle;break-inside:avoid}img.tex{max-height:1.6em;width:auto}.exam-blank{display:inline-block;min-width:4em;border-bottom:1px solid currentColor;height:1em;vertical-align:baseline}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #777;padding:4px}tr{break-inside:avoid}.printbar{text-align:center;padding:16px;font:16px/1.6 "Microsoft YaHei",sans-serif}.printbar button{font:inherit;background:#3d6552;color:white;border:0;border-radius:8px;padding:10px 24px;cursor:pointer}@page{size:A4;margin:16mm}@media(max-width:800px){main{padding:20px;margin:0}.options{margin-left:20px}}@media print{body,main{background:white;color:black}body{font-size:12pt;line-height:1.8}main{padding:0;margin:0;max-width:none}.printbar{display:none}h1{font-size:18pt}h2{font-size:16pt;border-color:#333}.sheet-info{font-size:10pt}.question{margin:18px 0 26px}img{max-height:230mm}a{color:inherit;text-decoration:none}}</style></head><body><div class="printbar"><button onclick="window.print()">打印 / 保存为 PDF</button></div><main><h1>' +
       escape(title.replace(/_空白试题$/, '')) + '</h1><div class="sheet-info"><span>共 ' + questions.length + ' 题</span><span>姓名：____________</span><span>日期：____________</span></div>' + body + '</main></body></html>';
   }
-  const api={imagePaths,decode,crc32,zip,images,markdownHtml,documentHtml,questionDocument};
+  const api={imagePaths,decode,crc32,zip,images,markdownHtml,documentHtml,questionDocument,mapLimit};
   root.ExportTools=api;
   if(typeof module!=='undefined')module.exports=api;
 })(typeof window==='undefined'?globalThis:window);

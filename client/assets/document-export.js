@@ -39,22 +39,62 @@
       'body{margin:0;background:#eaf0eb;color:#25362c;font:17px/1.85 "SimSun","Songti SC",serif}main{max-width:760px;margin:24px auto;padding:40px;background:#f5f7f3}h1{text-align:center;font:700 24px/1.6 "Microsoft YaHei",sans-serif}h2{font:700 22px/1.6 "Microsoft YaHei",sans-serif;margin:30px 0 18px;padding-bottom:8px;border-bottom:2px solid #3d6552;break-after:avoid}h3{font-size:16px;margin:0 0 8px;break-after:avoid}.sheet-info{display:flex;flex-wrap:wrap;justify-content:space-between;gap:14px;padding:14px 0;border-bottom:1px solid #bfcdbf;font-size:15px}.stats{padding:14px 0;border-bottom:1px solid #d6dfd5}.stats p{font-size:15px;margin:2px 0}.material{margin:16px 0 24px}.question{margin:22px 0 32px}.stem,.option{display:flex;gap:8px}.number{min-width:24px}.stem>div,.option>div{flex:1;min-width:0}.options{margin:12px 0 0 32px}.option{margin:8px 0;break-inside:avoid}p{margin:4px 0 10px}img{max-width:100%;height:auto;vertical-align:middle;break-inside:avoid}img.tex{max-height:1.6em;width:auto}.exam-blank{display:inline-block;min-width:4em;height:1em;border-bottom:1px solid;vertical-align:baseline}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #888;padding:4px}tr{break-inside:avoid}.review{margin:18px 0 0 32px;padding:16px 0 0;border-top:1px solid #bfcdbf;font-size:15px}.answer-line{display:flex;flex-wrap:wrap;gap:12px;font-weight:600}.self-assessment{margin-top:12px;color:#526359}.personal{margin-top:14px;padding-left:12px;border-left:2px solid #bfcdbf}.personal p{white-space:pre-wrap;overflow-wrap:anywhere}.explanation{margin-top:18px}.printbar{text-align:center;padding:16px;font:16px/1.6 "Microsoft YaHei",sans-serif}.printbar button{font:inherit;background:#3d6552;color:white;border:0;border-radius:8px;padding:10px 24px;cursor:pointer}.next-document{margin-top:50px;break-before:page}@page{size:A4;margin:17mm 16mm}@media(max-width:800px){main{margin:0;padding:20px}.options,.review{margin-left:20px}}@media print{body,main{background:white;color:black}body{font-size:12pt;line-height:1.8}main{padding:0;margin:0;max-width:none}.printbar{display:none}h1{font-size:18pt}h2{font-size:15pt;border-color:#333}h3{font-size:11pt}.sheet-info,.stats p,.review{font-size:10.5pt}.question{margin:18px 0 28px}img{max-height:230mm}.self-assessment{color:#333}}</style></head><body><div class="printbar"><button onclick="window.print()">打印</button></div><main>'+body+'</main></body></html>';
   }
   let ready;
-  function loadPdf(loadScript) {
-    if(!ready)ready=(async()=>{
-      if(!root.pdfMake)await loadScript('assets/vendor/pdfmake.min.js');
-      if(!root.QB_PDF_FONTS)await loadScript('assets/vendor/pdf-fonts.js');
-      root.pdfMake.fonts={Exam:{normal:'Exam-Regular.woff',bold:'Exam-Bold.woff',italics:'Exam-Regular.woff',bolditalics:'Exam-Bold.woff'}};
-      if(typeof FontFace!=='undefined') {
-        const face=new FontFace('ExamPDF','url(data:font/woff;base64,'+root.QB_PDF_FONTS['Exam-Regular.woff']+')');
-        await face.load();document.fonts.add(face);
-      }
-    })().catch(e=>{ready=null;throw e;});
-    return ready;
+  const fontReady={},pdfCache=new Map();
+  function inRanges(cp,ranges) {
+    let lo=0,hi=ranges.length-1;
+    while(lo<=hi) {const mid=(lo+hi)>>1,[start,end]=ranges[mid];
+      if(cp<start)hi=mid-1;else if(cp>end)lo=mid+1;else return true;}
+    return false;
   }
-  async function pdf(documents,images,loadScript) {
-    await loadPdf(loadScript);
+  function needsFullFont(documents) {
+    const coverage=root.QB_PDF_FONT_COVERAGE;
+    return [...new Set(JSON.stringify(documents))].some(char=>{
+      const cp=char.codePointAt(0);
+      return !inRanges(cp,coverage.subset)&&inRanges(cp,coverage.full);
+    });
+  }
+  function preparePdf(documents,loadScript,progress=()=>{}) {
+    if(!ready)ready=Promise.all([
+      root.pdfMake?null:loadScript('assets/vendor/pdfmake.min.js'),
+      root.QB_PDF_FONT_COVERAGE?null:loadScript('assets/vendor/pdf-font-coverage.js')
+    ]).catch(e=>{ready=null;throw e;});
+    return ready.then(()=>{
+      const full=needsFullFont(documents),font=full?'ExamFull':'ExamLite',family='PDF'+font;
+      if(!fontReady[font])fontReady[font]=(async()=>{
+        progress(full?'正在加载完整字体（复盘中含少见字）…':'正在加载 PDF 字体…');
+        const variable=full?'QB_PDF_FONTS':'QB_PDF_LITE_FONTS';
+        if(!root[variable])await loadScript('assets/vendor/'+(full?'pdf-fonts.js':'pdf-fonts-lite.js'));
+        const data=root[variable],prefix=full?'':'Lite-';
+        const vfs=Object.fromEntries(Object.entries(data).map(([k,v])=>[prefix+k,v]));
+        root.pdfMake.fonts={...root.pdfMake.fonts,[font]:{normal:prefix+'Exam-Regular.woff',bold:prefix+'Exam-Bold.woff',italics:prefix+'Exam-Regular.woff',bolditalics:prefix+'Exam-Bold.woff'}};
+        if(typeof FontFace!=='undefined') {
+          const face=new FontFace(family,'url(data:font/woff;base64,'+data['Exam-Regular.woff']+')');
+          await face.load();document.fonts.add(face);
+        }
+        return {font,family,vfs};
+      })().catch(e=>{delete fontReady[font];throw e;});
+      return fontReady[font];
+    });
+  }
+  function pdf(documents,images,loadScript,progress=()=>{}) {
+    // Content, scope, explanations, favorites and personal reflections all enter
+    // the key, so editing any exported detail invalidates the generated file.
+    const key=JSON.stringify([documents,images]);
+    const hit=pdfCache.get(key);
+    if(hit) {pdfCache.delete(key);pdfCache.set(key,hit);progress('使用已生成的 PDF…');return hit;}
+    const promise=generatePdf(documents,images,loadScript,progress).then(bytes=>{
+      if(bytes.length+key.length>20*1024*1024&&pdfCache.get(key)===promise)pdfCache.delete(key);
+      return bytes;
+    }).catch(e=>{if(pdfCache.get(key)===promise)pdfCache.delete(key);throw e;});
+    pdfCache.set(key,promise);
+    while(pdfCache.size>2)pdfCache.delete(pdfCache.keys().next().value);
+    return promise;
+  }
+  async function generatePdf(documents,images,loadScript,progress) {
+    const {font,family,vfs}=await preparePdf(documents,loadScript,progress);
+    progress('正在处理 PDF 图片…');
     const imageInfo={};
-    for(const path of Object.keys(images)) {
+    await root.ExportTools.mapLimit(Object.keys(images),4,async path=>{
       const img=new Image();img.src=imageUri(path,images);
       await img.decode();
       let uri=img.src;
@@ -63,8 +103,12 @@
         canvas.getContext('2d').drawImage(img,0,0);uri=canvas.toDataURL('image/png');
       }
       imageInfo[path]={uri,w:img.naturalWidth,h:img.naturalHeight};
-    }
+    });
+    progress('正在排版 PDF…');
+    // Give the progress message a chance to paint before synchronous PDF layout.
+    await new Promise(resolve=>setTimeout(resolve,0));
     const measuring=document.createElement('canvas').getContext('2d');
+    const widths=new Map();
     function formulaLines(runs,fontSize) {
       // Equations are images, but surrounding text remains real PDF text on the same baseline.
       const lines=[];let pieces=[],width=0;
@@ -81,9 +125,12 @@
           columnGap:0,margin:[0,0,0,3]});pieces=[];width=0;
       };
       for(const run of runs) {
+        const size=run.fontSize||fontSize;
+        if(!run.image)measuring.font=size+'px "'+family+'","SimSun",serif';
         const parts=run.image?[run]:[...run.text].map(char=>{
-          measuring.font=(run.fontSize||fontSize)+'px "ExamPDF","SimSun",serif';
-          return {...run,text:char,width:measuring.measureText(char).width*1.015};
+          const key=size+':'+char;
+          if(!widths.has(key))widths.set(key,measuring.measureText(char).width*1.015);
+          return {...run,text:char,width:widths.get(key)};
         });
         for(const p of parts) {
           if(p.text==='\n'){finish();continue;}
@@ -178,7 +225,7 @@
         content.push({canvas:[{type:'line',x1:0,y1:0,x2:500,y2:0,lineWidth:.35,lineColor:'#c8d1c8'}],margin:[0,16,0,4]});
       });
     });
-    const def={pageSize:'A4',pageMargins:[46,48,46,45],defaultStyle:{font:'Exam',fontSize:12,lineHeight:1.45,color:'#202720'},
+    const def={pageSize:'A4',pageMargins:[46,48,46,45],defaultStyle:{font,fontSize:12,lineHeight:1.45,color:'#202720'},
       info:{title:documents.length===1?documents[0].title:'行测复盘报告',author:'行测练习室'},
       styles:{title:{fontSize:18,bold:true,alignment:'center',margin:[0,0,0,16]},meta:{fontSize:10,color:'#555f55',margin:[0,0,0,12]},
         summary:{fontSize:10.5,margin:[0,2,0,3]},type:{fontSize:15,bold:true,margin:[0,22,0,12]},label:{fontSize:11,bold:true,margin:[0,8,0,5]},
@@ -187,10 +234,21 @@
       pageBreakBefore:(node,following)=>!!node.style&&['type','label'].includes(node.style)&&following.length===0,
       content};
     return new Promise((resolve,reject)=>{
-      try {root.pdfMake.createPdf(def).getBuffer(bytes=>resolve(bytes));}catch(e){reject(e);}
+      try {
+        // pdfmake 0.2 replaces its global VFS when a new font pack is loaded.
+        // Bind exactly this export's fonts and bytes, so full/subset exports can
+        // safely alternate. All fonts/images are local bytes; no URL resolver.
+        const stream=root.pdfMake.createPdf(def,null,{[font]:root.pdfMake.fonts[font]},vfs).getStream();
+        const chunks=[];let size=0;
+        stream.on('data',chunk=>{chunks.push(chunk);size+=chunk.length;});
+        stream.on('error',reject);
+        stream.on('end',()=>{const bytes=new Uint8Array(size);let offset=0;
+          for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}resolve(bytes);});
+        stream.end();
+      }catch(e){reject(e);}
     });
   }
-  const api={html,pdf,imageOptions};
+  const api={html,pdf,preparePdf,imageOptions};
   root.DocumentExport=api;
   if(typeof module!=='undefined')module.exports=api;
 })(typeof window==='undefined'?globalThis:window);
