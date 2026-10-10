@@ -322,7 +322,7 @@ function liveTime() {
 }
 
 function syncClock() {
-  const canRun = route.name === 'quiz' && S.session && !S.session.submitted && !S.session.paused && !$('.modal-bg') && !(SETTINGS.autoPause && document.hidden);
+  const canRun = route.name === 'quiz' && S.session && !S.session.submitted && !S.session.paused && !$('.modal-bg:not([data-keep-timing])') && !(SETTINGS.autoPause && document.hidden);
   if (!canRun) { flushTime(); S.shownAt = 0; }
   else if (!S.shownAt) S.shownAt = performance.now();
   const time = liveTime();
@@ -667,20 +667,21 @@ function parseHash() {
 /* ---------------------------------------------------------- 通用片段 */
 
 function topbar(active) {
+  const mobileLabels = {home:'首页',papers:'真题',custom:'专项',wrong:'错题',favorites:'收藏',history:'记录'};
   const link = (href, label, key) =>
-    `<a href="${href}" class="${active === key ? 'on' : ''}">${label}</a>`;
+    `<a href="${href}" aria-label="${label}" ${active === key ? 'aria-current="page"' : ''} class="${active === key ? 'on' : ''}"><span class="nav-label-desktop">${label}</span><span class="nav-label-mobile">${mobileLabels[key]}</span></a>`;
   return `<div class="topbar">
     <a class="brand" href="#/">行测练习室</a>
     <div class="spacer"></div>
     ${window.CloudSync?.statusHtml() || ''}
-    <div class="navlinks">
+    <nav class="navlinks" aria-label="主导航">
       ${link('#/', '首页', 'home')}
       ${link('#/papers', '真题套卷', 'papers')}
       ${link('#/custom', '专项训练', 'custom')}
       ${link('#/wrong', '错题本', 'wrong')}
       ${link('#/favorites', '收藏题', 'favorites')}
       ${link('#/history', '练习记录', 'history')}
-    </div>
+    </nav>
   </div>`;
 }
 
@@ -918,7 +919,7 @@ function viewCustom() {
 
   <div class="card card-pad" style="margin-top:18px">
     <div class="field"><span class="lbl">1. 选择题型（可多选）</span>
-      ${[...byModule.entries()].map(([m, ts]) => `<div style="margin-top:8px">
+      ${[...byModule.entries()].map(([m, ts]) => `<div class="custom-module" style="margin-top:8px">
         <div class="tiny muted" style="margin-bottom:6px">${esc(m)}</div>
         <div class="row">${ts.map((t) => `<label class="check ${c.types.has(t) ? 'on' : ''}">
           <input type="checkbox" data-act="ct" data-t="${esc(t)}" ${c.types.has(t) ? 'checked' : ''}>
@@ -991,9 +992,32 @@ function renderQuestion(q, ref, a) {
     <div class="right row"><button class="btn btn-sm ${a.flagged ? 'btn-primary' : ''}" data-act="flag" aria-pressed="${!!a.flagged}">${a.flagged ? '已标记' : '标记'}</button>${favoriteButton(q, ref)}</div>
   </div>
   <div class="stem" data-mark-zone="stem">${ExamFormat.stem(q.stem, q.type)}</div>
+  ${figureButton(q)}
   <div class="opts">${optHtml}</div>
   ${reviewControls(S.session, ref, a, true)}
   ${multiHint}`;
+}
+
+function renderAnswerSheet(sess) {
+  return sess.refs.map((r, idx) => {
+    const a = sess.answers[r.qid] || {};
+    const cls = [a.pick ? 'done' : '', idx === sess.index ? 'cur' : '', a.flagged ? 'flagged' : ''].filter(Boolean).join(' ');
+    return `<button class="${cls}" data-act="jump" data-i="${idx}" ${idx === sess.index ? 'aria-current="step"' : ''} aria-label="练习第 ${idx + 1} 题，${a.pick ? '已答' : '未答'}${a.flagged ? '，待复查' : ''}" title="${esc(r.type)} · 原卷第 ${r.no} 题">${idx + 1}</button>`;
+  }).join('');
+}
+
+function questionFigures(q) {
+  const photos = [];
+  for (const [label, html] of [['材料', q.material], ['题干', q.stem], ...q.options.map(o => ['选项 ' + o.k, o.t])]) {
+    for (const m of String(html || '').matchAll(/<img\b[^>]*\bsrc=["'](assets\/img\/timu\/[^"']+)["'][^>]*>/g)) {
+      if (!photos.some(p => p.src === m[1])) photos.push({label, src:m[1]});
+    }
+  }
+  return photos;
+}
+
+function figureButton(q) {
+  return questionFigures(q).length ? `<div class="figure-actions mobile-only"><button class="btn figure-view-button" data-act="question-images" data-qid="${esc(q.qid)}">查看大图</button></div>` : '';
 }
 
 async function viewQuiz() {
@@ -1013,13 +1037,7 @@ async function viewQuiz() {
   const flaggedN = sess.refs.filter((r) => sess.answers[r.qid]?.flagged).length;
   const elapsed = liveTime().total;
 
-  const sheet = sess.refs.map((r, idx) => {
-    const aa = sess.answers[r.qid] || {};
-    let cls = aa.pick ? 'done' : '';
-    if (idx === i) cls += ' cur';
-    if (aa.flagged) cls += ' flagged';
-    return `<button class="${cls}" data-act="jump" data-i="${idx}" ${idx === i ? 'aria-current="step"' : ''} aria-label="练习第 ${idx + 1} 题，${aa.pick ? '已答' : '未答'}${aa.flagged ? '，待复查' : ''}" title="${r.type} · 原卷第 ${r.no} 题${aa.flagged ? '（已标记）' : ''}">${idx + 1}</button>`;
-  }).join('');
+  const sheet = renderAnswerSheet(sess);
 
   const body = q.material
     ? `<div class="qbody with-mat">
@@ -1046,17 +1064,17 @@ async function viewQuiz() {
 
   <div class="quiz-wrap">
     <div class="card exam-paper">
-      <div class="paper-head"><span>第 ${i + 1} 题</span><span>共 ${sess.refs.length} 题</span></div>
+      <div class="paper-head"><span>第 ${i + 1} 题 <small class="mobile-only">/ ${sess.refs.length}</small></span><span class="desktop-only">共 ${sess.refs.length} 题</span><button class="btn mobile-only" data-act="mobile-sheet">答题卡 <span>${answeredN}/${sess.refs.length}</span></button></div>
       ${ExamTools.toolbar()}
       <div class="paper-content">
       ${body}
       </div>
       ${sess.paused ? '<div class="pause-cover"><b>练习已暂停</b><p>计时已停止，继续后显示题目。</p><button class="btn btn-primary" data-act="pause-quiz">继续作答</button></div>' : ''}
       <div class="qnav">
-        <button class="btn" data-act="prev" ${i === 0 ? 'disabled' : ''}>← 上一题</button>
-        <button class="btn" data-act="next" ${i === sess.refs.length - 1 ? 'disabled' : ''}>下一题 →</button>
+        <button class="btn" data-act="prev" ${i === 0 ? 'disabled' : ''}>上一题</button>
+        <button class="btn" data-act="next" ${i === sess.refs.length - 1 ? 'disabled' : ''}>下一题</button>
         <div class="r">
-          <button class="btn btn-sm btn-ghost" data-act="clear-pick" ${a.pick ? '' : 'disabled'}>清除答案</button>
+          <button class="btn btn-sm btn-ghost desktop-only" data-act="clear-pick" ${a.pick ? '' : 'disabled'}>清除答案</button><button class="btn mobile-only" data-act="mobile-note" aria-label="本题草稿">草稿</button>
         </div>
       </div>
     </div>
@@ -1124,6 +1142,7 @@ async function viewReport(sid, opts = {}) {
         </div>
         ${q && q.material ? `<div class="mat" style="margin-bottom:12px"><div class="mat-h">材料</div><div data-mark-zone="material">${q.material}</div></div>` : ''}
         <div class="stem" data-mark-zone="stem">${q ? ExamFormat.stem(q.stem, q.type) : ''}</div>
+        ${q ? figureButton(q) : ''}
         <div class="opts">${q ? q.options.map((o) => {
           const isAns = q.answer.includes(o.k);
           const isMine = (a.pick || '').includes(o.k);
@@ -1239,7 +1258,7 @@ function viewHistory() {
 
   const sel = V.historySel;
   return `${topbar('history')}
-  <div class="card card-pad">
+  <div class="card card-pad history-overview">
     <div class="row"><h1 style="font-size:19px">记录与导出</h1><div class="spacer"></div>
       <button class="btn btn-sm" data-act="backup">导出完整备份</button>
       <button class="btn btn-sm" data-act="restore">导入完整备份</button>
@@ -1264,7 +1283,7 @@ function viewHistory() {
   </div>` : ''}
 
   <div class="card">
-    <div class="card-head"><h3>历次练习</h3>
+    <div class="card-head history-selection"><h3>历次练习</h3>
       <div class="spacer"></div>
       <span class="small muted">已选 ${sel.size} 次</span>
       <button class="btn btn-sm" data-act="sel-all">全选</button>
@@ -1272,7 +1291,7 @@ function viewHistory() {
       <button class="btn btn-sm" data-act="sel-invert">反选</button>
       <button class="btn btn-sm btn-primary" data-act="export-multi" ${sel.size ? '' : 'disabled'}>导出所选</button>
     </div>
-    <table class="tbl">
+    <table class="tbl history-table">
       <thead><tr>
         <th style="width:34px"></th><th>时间</th><th>名称</th><th>类型</th>
         <th class="num">题量</th><th class="num">作答</th><th class="num">正确</th><th class="num">正确率</th><th class="num">用时</th><th></th>
@@ -1293,6 +1312,10 @@ function viewHistory() {
         </tr>`;
       }).join('')}</tbody>
     </table>
+    <div class="mobile-history">${sessions.map(s => {
+      const m = s.meta || {};
+      return `<article class="history-record"><div class="history-record-head"><label class="history-record-select"><input type="checkbox" data-act="hsel" data-id="${esc(s.id)}" ${sel.has(s.id) ? 'checked' : ''} aria-label="选择练习：${esc(displayTitle(s.title))}"></label><a href="#/report/${s.id}"><b>${esc(displayTitle(s.title))}</b><span>${fmtTime(s.submittedAt || s.createdAt)}</span></a></div><a class="history-record-stats" href="#/report/${s.id}"><div><b>${pct(m.right,m.answered)}</b><span>正确率</span></div><div><b>${m.answered ?? 0}/${m.total ?? s.refs.length}</b><span>作答</span></div><div><b>${fmtDur(m.totalMs)}</b><span>用时</span></div></a></article>`;
+    }).join('')}</div>
     <div class="card-pad row">
       <button class="btn btn-sm btn-ghost btn-danger" data-act="clear-sessions">清空全部记录</button>
       <span class="small muted">最多保留 ${MAX_SESSIONS} 次；导出后即可安全删除。</span>
@@ -1332,6 +1355,7 @@ async function viewWrong() {
         <div class="row" style="justify-content:flex-end;margin-bottom:14px">${favoriteButton(q, v.ref)}</div>
         ${q.material ? `<div class="mat" style="margin-bottom:12px"><div class="mat-h">材料</div>${q.material}</div>` : ''}
         <div class="stem" style="font-size:19px">${ExamFormat.stem(q.stem, q.type)}</div>
+        ${figureButton(q)}
         <div class="opts">${q.options.map((o) => {
           const isAns = q.answer.includes(o.k);
           return `<div class="opt locked ${isAns ? 'correct' : ''}"><div class="k">${o.k}</div><div class="t">${o.t}</div></div>`;
@@ -1360,11 +1384,11 @@ async function viewWrong() {
 
 /* ---------------------------------------------------------- 视图：弹层 */
 
-function modal(title, bodyHtml, actions = '') {
+function modal(title, bodyHtml, actions = '', keepTiming = false) {
   // 注意：不要在 .modal 上用 onclick="event.stopPropagation()"，
   // 那会挡住 document 上的事件委托，导致弹层里的按钮全部失效。
   // 点击遮罩关闭的逻辑由 data-act="close-modal-bg" 里判断 e.target === el 完成。
-  return `<div class="modal-bg" data-act="close-modal-bg">
+  return `<div class="modal-bg" data-act="close-modal-bg" ${keepTiming ? 'data-keep-timing' : ''}>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-head"><h3 id="modal-title">${esc(title)}</h3>
         <button class="btn btn-sm btn-ghost" data-act="close-modal">关闭</button></div>
@@ -1387,7 +1411,7 @@ async function viewFavorites() {
     <div class="favorite-filters row">${['',...types].map(t => `<button class="btn btn-sm ${filter === t ? 'btn-primary' : ''}" data-act="favorite-filter" data-type="${esc(t)}">${t || '全部'}</button>`).join('')}</div></div>
     <div class="card">${items.length ? items.map(v => {
       const q=QMAP.get(v.ref.qid); if(!q)return '';
-      return `<details class="qitem"><summary><span class="chip">${esc(v.ref.type)}</span><span class="qt">${esc(questionExcerpt(q))}</span></summary><div class="detail"><div class="row"><span class="muted">原卷第 ${v.ref.no} 题</span><div class="right">${favoriteButton(q,v.ref)}</div></div>${q.material ? `<div class="mat">${q.material}</div>` : ''}<div class="stem">${ExamFormat.stem(q.stem,q.type)}</div><div class="opts">${q.options.map(o=>`<div class="opt locked"><div class="k">${o.k}</div><div class="t">${o.t}</div></div>`).join('')}</div><details class="expl-toggle"><summary>查看答案与解析</summary><b>答案：${q.answer}</b><div class="expl">${q.explanation || ''}</div></details></div></details>`;
+      return `<details class="qitem"><summary><span class="chip">${esc(v.ref.type)}</span><span class="qt">${esc(questionExcerpt(q))}</span></summary><div class="detail"><div class="row"><span class="muted">原卷第 ${v.ref.no} 题</span><div class="right">${favoriteButton(q,v.ref)}</div></div>${q.material ? `<div class="mat">${q.material}</div>` : ''}<div class="stem">${ExamFormat.stem(q.stem,q.type)}</div>${figureButton(q)}<div class="opts">${q.options.map(o=>`<div class="opt locked"><div class="k">${o.k}</div><div class="t">${o.t}</div></div>`).join('')}</div><details class="expl-toggle"><summary>查看答案与解析</summary><b>答案：${q.answer}</b><div class="expl">${q.explanation || ''}</div></details></div></details>`;
     }).join('') : emptyBox('', '还没有收藏题', '答题或复盘时点击「收藏」，这里就能找到。')}</div>`;
 }
 
@@ -1424,9 +1448,11 @@ async function render() {
       default: html = `${topbar('')}${emptyBox(ExamTools.icon('file'), '页面不存在', '')}`;
     }
     app.className = 'app' + (['quiz', 'report'].includes(route.name) ? ' wide' : '');
+    app.dataset.view = route.name;
     app.innerHTML = html + (MODAL || '');
     MODAL = null;
     ExamTools.mount();
+    window.MobileUI?.mount();
     syncClock();
     $('.modal [data-act="close-modal"]')?.focus();
     // 只有换了页面或换了题才回到顶部，避免看材料时被反复弹回
@@ -1445,6 +1471,29 @@ async function render() {
 /* ---------------------------------------------------------- 动作 */
 
 const ACT = {
+  'mobile-sheet'() {
+    const sess = S.session; if (!sess) return;
+    const answered = sess.refs.filter(r => sess.answers[r.qid]?.pick).length;
+    const flagged = sess.refs.filter(r => sess.answers[r.qid]?.flagged).length;
+    MODAL = modal('答题卡', `<div class="mobile-answer-sheet"><p class="sheet-summary">已答 ${answered} / ${sess.refs.length}${flagged ? ` · 待复查 ${flagged} 题` : ''}</p><div class="sheet">${renderAnswerSheet(sess)}</div><div class="review-jumps"><button class="btn" data-act="jump-unanswered">下一道未答</button><button class="btn" data-act="jump-flagged">下一道标记</button></div><label class="auto-pause"><input type="checkbox" data-act="auto-pause" ${SETTINGS.autoPause ? 'checked' : ''}>切换页面自动暂停</label></div>`, '', true);
+    render();
+  },
+  'mobile-note'() {
+    const sess = S.session; if (!sess) return;
+    const a = ansOf(sess, sess.refs[sess.index].qid);
+    MODAL = modal('本题草稿', `<label class="mobile-note-field"><span>第 ${sess.index + 1} 题 · ${esc(sess.refs[sess.index].type)}</span><textarea data-act="mobile-question-note" placeholder="写下你的思路、计算过程或疑问……">${esc(a.note || '')}</textarea></label><p class="note-save-status" role="status">草稿自动保存，导出时附上</p>`, '<button class="btn btn-primary" data-act="close-modal">完成</button>', true);
+    render();
+  },
+  'question-images'(e, el) {
+    const q = QMAP.get(el.dataset.qid); if (!q) return;
+    const photos = questionFigures(q); if (!photos.length) return;
+    MODAL = modal('题目图片', `<div class="image-gallery">${photos.map(p => `<figure><figcaption>${esc(p.label)}</figcaption><div class="image-scroll"><img src="${esc(p.src)}" alt="${esc(p.label)}" decoding="async"></div></figure>`).join('')}</div>`, '<button class="btn" data-act="image-native" aria-pressed="false">原始大小</button>', true);
+    render();
+  },
+  'image-native'(e, el) {
+    const native = $('.image-gallery')?.classList.toggle('native-size');
+    el.setAttribute('aria-pressed', !!native); el.textContent = native ? '适合屏幕' : '原始大小';
+  },
   favorite(e, el) {
     const q = QMAP.get(el.dataset.qid); if(!q)return;
     const key = questionKey(q), favorites = getFavorites();
@@ -1973,6 +2022,7 @@ function updateAnswerUI() {
   const progress = $('.progress i'); if (progress) progress.style.width = `${answered / sess.refs.length * 100}%`;
   const sheetCount = $('[data-sheet-count]'); if (sheetCount) sheetCount.textContent = flagged ? `标记待复查 ${flagged} 题` : '';
   const sheetSummary = $('.sheet-panel summary span'); if (sheetSummary) sheetSummary.textContent = `${answered} / ${sess.refs.length}`;
+  const mobileSheetCount = $('.paper-head [data-act="mobile-sheet"] span'); if (mobileSheetCount) mobileSheetCount.textContent = `${answered}/${sess.refs.length}`;
   const clear = $('[data-act="clear-pick"]'); if (clear) clear.disabled = !a.pick;
   for (const button of document.querySelectorAll('.sheet [data-i]')) {
     const index = +button.dataset.i;
@@ -2162,6 +2212,13 @@ document.addEventListener('change', (e) => {
 /* 搜索框实时过滤：重渲染后把焦点和光标还原回去 */
 document.addEventListener('input', (e) => {
   const el = e.target.closest('[data-act]');
+  if (el?.dataset.act === 'mobile-question-note') {
+    if (S.session && !S.session.submitted) {
+      ansOf(S.session,S.session.refs[S.session.index].qid).note = el.value;
+      saveActive();
+    }
+    return;
+  }
   if (el?.dataset.act === 'review-description') {
     const saved = saveReflection(el.dataset.sid, el.dataset.qid, el.value);
     const status = el.closest('[data-assessment]').querySelector('.reflection-save');

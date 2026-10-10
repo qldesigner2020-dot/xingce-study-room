@@ -26,9 +26,9 @@ const ExamTools = (() => {
   function toolbar() {
     const tools = [['select', '作答'], ['pen', '手写笔'], ['underline', '划线'], ['highlight', '高亮'], ['eraser', '橡皮']];
     return `<div class="annotation-toolbar" role="toolbar" aria-label="题面标注工具">
-      <div class="tool-buttons">${tools.map(([id, label]) => `<button class="btn btn-sm ${tool === id ? 'active' : ''}" data-exam-tool="${id}" aria-pressed="${tool === id}" title="${id === 'underline' || id === 'highlight' ? '拖选文字后标注' : label}">${label}</button>`).join('')}</div>
+      <div class="tool-buttons">${tools.map(([id, label]) => `<button class="btn btn-sm ${['underline','highlight','eraser'].includes(id) ? 'extended-tool' : ''} ${tool === id ? 'active' : ''}" data-exam-tool="${id}" aria-pressed="${tool === id}" title="${id === 'underline' || id === 'highlight' ? '拖选文字后标注' : label}">${label}</button>`).join('')}<button class="btn btn-sm clear-ink" data-exam-command="clear-ink" title="清空本题全部手写笔迹，可撤销" disabled>清空笔迹</button></div>
       <div class="tool-extras"><button class="btn btn-sm" data-exam-command="undo" title="撤销本题最近一次标注">撤销</button>
-      <details class="action-menu tool-menu"><summary class="btn btn-sm">更多</summary><div class="menu-body"><button class="btn btn-ghost" data-exam-command="clear">清除标注</button><div class="ink-colors">
+      <details class="action-menu tool-menu"><summary class="btn btn-sm"><span data-tool-more>更多</span></summary><div class="menu-body"><div class="mobile-annotation-tools"><button class="btn" data-exam-tool="underline" aria-pressed="${tool === 'underline'}">划线</button><button class="btn" data-exam-tool="highlight" aria-pressed="${tool === 'highlight'}">高亮</button><button class="btn" data-exam-tool="eraser" aria-pressed="${tool === 'eraser'}">橡皮</button></div><button class="btn btn-ghost" data-exam-command="clear">清除全部标注</button><div class="ink-colors">
       <button class="ink-swatch" data-exam-color="#b54836" aria-label="红色笔" aria-pressed="${inkColor === '#b54836'}" style="--swatch:#b54836"></button><button class="ink-swatch" data-exam-color="#252a26" aria-label="黑色笔" aria-pressed="${inkColor === '#252a26'}" style="--swatch:#252a26"></button>
       </div><label class="paper-size">字号 <select data-paper-size aria-label="试卷字号">${[16, 18, 19, 20, 22, 24].map(n => `<option value="${n}" ${SETTINGS.paperSize === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
       <button class="btn btn-ghost" data-exam-command="fullscreen">全屏专注</button></div></details></div></div>`;
@@ -124,6 +124,10 @@ const ExamTools = (() => {
     const paper = document.querySelector('.exam-paper');
     if (paper) paper.dataset.annotationTool = tool;
     document.querySelectorAll('[data-exam-tool]').forEach(b => { b.classList.toggle('active', b.dataset.examTool === tool); b.setAttribute('aria-pressed', String(b.dataset.examTool === tool)); });
+    const more = document.querySelector('[data-tool-more]');
+    if (more) { more.textContent = tool === 'underline' ? '划线' : tool === 'highlight' ? '高亮' : tool === 'eraser' ? '橡皮' : '更多'; more.parentElement.classList.toggle('active', ['underline','highlight','eraser'].includes(tool)); }
+    const clearInk = document.querySelector('[data-exam-command="clear-ink"]');
+    if (clearInk) clearInk.disabled = !current()?.annotations?.strokes?.length;
     document.querySelectorAll('[data-exam-color]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.examColor === inkColor)));
   }
   function mount() {
@@ -188,10 +192,14 @@ const ExamTools = (() => {
     const button = e.target.closest('[data-exam-tool], [data-exam-command], [data-exam-color]');
     if (button) {
       e.preventDefault(); e.stopImmediatePropagation();
-      if (button.dataset.examTool) { tool = button.dataset.examTool; setToolClasses(); }
+      if (button.dataset.examTool) { tool = button.dataset.examTool; setToolClasses(); const menu = button.closest('.tool-menu'); if (menu) menu.open = false; }
       if (button.dataset.examColor) { inkColor = button.dataset.examColor; setToolClasses(); }
       const command = button.dataset.examCommand;
       if (command === 'undo') undo();
+      if (command === 'clear-ink') {
+        const a = current();
+        if (a?.annotations?.strokes?.length) { checkpoint(a); a.annotations.strokes = []; repaint(); save(); }
+      }
       if (command === 'clear') {
         const a = current(); if (a) { checkpoint(a); a.annotations = {version:1, marks:[], strokes:[]}; repaint(); save(); }
       }
@@ -258,6 +266,7 @@ const ExamTools = (() => {
     if (d.svg.hasPointerCapture(e.pointerId)) d.svg.releasePointerCapture(e.pointerId);
     if (a && d.stroke.points.length > 1) { checkpoint(a); annotations(a).strokes.push(d.stroke); d.path.dataset.strokeId = d.stroke.id; save(); }
     else d.path.remove();
+    setToolClasses();
     suppressClickUntil = performance.now() + 600;
   }
   document.addEventListener('pointercancel', finishDrawing);

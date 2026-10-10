@@ -2,7 +2,7 @@
   "name": "xingce-study-room",
   "private": true,
   "type": "module",
-  "scripts": {"build": "node scripts/build.mjs", "package:portable": "node scripts/package-portable.mjs", "test": "node scripts/test-database.mjs && node scripts/test-cloud-sync.mjs && node scripts/test-multitab.mjs && node scripts/test-export.mjs"},
+  "scripts": {"build": "node scripts/build.mjs", "package:portable": "node scripts/package-portable.mjs", "test": "node scripts/test-database.mjs && node scripts/test-cloud-sync.mjs && node scripts/test-multitab.mjs && node scripts/test-export.mjs && node scripts/test-mobile-ui.mjs"},
   "dependencies": {"@supabase/supabase-js": "2.117.2"},
   "devDependencies": {"esbuild": "0.28.2", "@electric-sql/pglite": "0.5.8"}
 }

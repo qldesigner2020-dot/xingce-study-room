@@ -447,7 +447,9 @@ img.tex {
   display: inline-block; vertical-align: middle;
   max-height: 1.45em; width: auto; margin: 0 1px;
 }
-img.fig { display: inline-block; vertical-align: middle; }
+/* Source diagrams contain fixed inline pixel dimensions. When max-width
+   shrinks their width, release the fixed height to preserve the original ratio. */
+img.fig { display: inline-block; vertical-align: middle; height: auto !important; }
 .stem > img.fig, .expl > img.fig, .mat > img.fig { display: block; margin: 10px 0; }
 
 /* 表格类题目内容（部分题干含表格） */
