@@ -186,6 +186,17 @@
   async function init() {
     const auth=await window.CloudBackend.ready;
     if(auth.guest)return true;
+    if(auth.userId&&state.userId&&auth.userId!==state.userId) {
+      localStorage.setItem('qb.cloud.previous-account',JSON.stringify({state,cache:localValues(effective())}));
+      for(const key of Object.values(keys))localStorage.removeItem(key);
+      state={userId:null,records:{},pending:{},conflicts:[]};persist();
+    }
+    if(auth.offline&&auth.userId===state.userId) {
+      // Reopen only the same previously synced account. Recover interrupted
+      // writes before rendering, then synchronize without blocking the app.
+      for(const [kind,key] of Object.entries(keys))changed(key,read(key,kind==='sessions'?[]:kind==='active'?null:{}));
+      offline=true;update();setTimeout(()=>{pull();flush();},0);return true;
+    }
     try {
       const data=await request();
       if(!state.userId||state.userId===data.userId)refreshJournal();

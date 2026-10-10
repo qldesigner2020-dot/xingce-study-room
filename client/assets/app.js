@@ -91,7 +91,7 @@ function loadScript(src) {
     const el = document.createElement('script');
     el.src = src;
     el.onload = () => resolve();
-    el.onerror = () => reject(new Error('无法加载 ' + src));
+    el.onerror = () => {el.remove();reject(new Error(navigator.onLine?'无法加载内容，请联网打开「手机离线」检查更新':'这部分题库尚未下载，请联网打开「手机离线」继续下载'));};
     document.head.appendChild(el);
   });
 }
@@ -674,6 +674,7 @@ function topbar(active) {
     <a class="brand" href="#/">行测练习室</a>
     <div class="spacer"></div>
     ${window.CloudSync?.statusHtml() || ''}
+    ${window.OfflineStudy?.statusHtml() || ''}
     <nav class="navlinks" aria-label="主导航">
       ${link('#/', '首页', 'home')}
       ${link('#/papers', '真题套卷', 'papers')}

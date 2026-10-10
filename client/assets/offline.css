@@ -1,0 +1,31 @@
+.offline-entry {white-space:nowrap;}
+.offline-modal {max-width:620px;}
+.offline-modal .modal-body {padding:26px;}
+.offline-summary h2 {margin:6px 0 12px;font-size:28px;line-height:1.35;}
+.offline-modal p {margin:8px 0;line-height:1.75;}
+.offline-eyebrow {color:var(--accent);font-weight:650;}
+.offline-download {margin:24px 0;padding:20px;background:var(--accent-soft);border:1px solid var(--accent-border);border-radius:14px;}
+.offline-progress-label {display:flex;align-items:center;justify-content:space-between;gap:12px;font-variant-numeric:tabular-nums;}
+.offline-progress-label strong {font-size:21px;}
+.offline-progress-label span {font-size:14px;white-space:nowrap;}
+.offline-download progress {display:block;width:100%;height:10px;margin:16px 0;border:0;border-radius:6px;overflow:hidden;accent-color:var(--accent);}
+.offline-download progress::-webkit-progress-bar {background:#d3dfd5;border-radius:6px;}
+.offline-download progress::-webkit-progress-value {background:var(--accent);border-radius:6px;}
+.offline-detail {font-size:14px;color:var(--text-2);}
+.offline-error {color:#813e2b;}
+.offline-actions {display:flex;flex-wrap:wrap;gap:10px;margin-top:16px;}
+.offline-install,.offline-records,.offline-partial {border-top:1px solid var(--border);padding-top:20px;margin-top:24px;}
+.offline-modal h3 {margin:0 0 10px;font-size:18px;}
+.offline-partial summary {cursor:pointer;font-weight:650;}
+.offline-partial label {display:block;margin:14px 0 8px;}
+.offline-partial select {display:block;width:100%;max-width:100%;font-size:16px;margin-bottom:12px;}
+@media (max-width:760px),(max-width:960px) and (max-height:500px) and (orientation:landscape) {
+  .topbar {gap:8px;}
+  .topbar .brand {font-size:17px;}
+  .topbar>[data-cloud-status] {max-width:106px;font-size:12px;padding:8px;}
+  .topbar>.offline-entry {max-width:80px;font-size:12px;padding:8px;}
+  .offline-modal .modal-body {padding:22px 18px;}
+  .offline-summary h2 {font-size:25px;}
+  .offline-download {padding:16px;}
+  .offline-actions .btn {min-height:44px;}
+}

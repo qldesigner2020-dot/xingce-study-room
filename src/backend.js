@@ -2,9 +2,34 @@ import {createClient} from '@supabase/supabase-js';
 const config=window.STUDY_CLOUD_CONFIG||{};
 const guestKey='qb.cloud.guest.v1';
 const safe=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let client,guest=sessionStorage.getItem(guestKey)==='1',readyResolve,mode='login';
+let client,guest=(sessionStorage.getItem(guestKey)||localStorage.getItem(guestKey))==='1',readyResolve,mode='login';
 const ready=new Promise(resolve=>readyResolve=resolve);
 const redirectTo=new URL('.',location.href).href;
+// The cached identity is only used to reopen this device's already synced
+// records. Every server request still requires Supabase to validate its session.
+function localIdentity() {
+  try {
+    const ref=new URL(config.url).hostname.split('.')[0];
+    const session=JSON.parse(localStorage.getItem('sb-'+ref+'-auth-token'));
+    const journal=JSON.parse(localStorage.getItem('qb.cloud.journal.v1'));
+    return session?.user?.id&&session.refresh_token&&journal?.userId===session.user.id?session.user:null;
+  } catch {return null;}
+}
+function makeClient() {
+  if(client||!config.url||!config.publishableKey?.startsWith('sb_publishable_'))return client;
+  client=createClient(config.url,config.publishableKey,{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:true},
+    global:{fetch:async(input,init={})=>{
+      if(!navigator.onLine)throw new TypeError('Network offline');
+      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+      const abort=()=>controller.abort();init.signal?.addEventListener('abort',abort,{once:true});
+      if(init.signal?.aborted)controller.abort();
+      try{return await fetch(input,{...init,signal:controller.signal});}
+      finally{clearTimeout(timer);init.signal?.removeEventListener('abort',abort);}
+    }}});
+  client.auth.onAuthStateChange(event=>{if(event==='PASSWORD_RECOVERY'){mode='recovery';renderForm();}});
+  return client;
+}
+function clearGuest(){guest=false;sessionStorage.removeItem(guestKey);localStorage.removeItem(guestKey);}
 function humanError(error) {
   if(/failed to fetch|fetch failed|network|abort|timeout/i.test(error?.message||''))return '连接暂时中断，记录已保存在本机，恢复网络后会继续同步';
   const known={'Invalid login credentials':'邮箱或密码不正确','Email not confirmed':'请先打开邮箱中的确认邮件',
@@ -12,10 +37,10 @@ function humanError(error) {
   return known[error?.message]||error?.message||'暂时无法连接，请稍后重试';
 }
 function renderForm(message='') {
-  const configured=!!client,recovery=mode==='recovery';
+  const configured=!!client||!!(config.url&&config.publishableKey),recovery=mode==='recovery';
   document.getElementById('app').innerHTML=`<main class="auth-page"><section class="auth-paper">
     <p class="auth-brand">行测练习室</p><h1>${recovery?'设置新密码':mode==='signup'?'创建练习账号':'继续你的练习'}</h1>
-    <p class="auth-intro">${configured?'登录后，在家和公司接着刷。':'同步服务还在配置中，可以先在本机练习。'}</p>
+    <p class="auth-intro">${!navigator.onLine?'现在离线，可继续本机练习；登录和首次同步需要联网。':configured?'登录后，在家和公司接着刷。':'同步服务还在配置中，可以先在本机练习。'}</p>
     ${configured?`<form id="study-login" class="auth-form">
       ${recovery?'':'<label>邮箱<input name="email" type="email" autocomplete="email" required></label>'}
       <label>${recovery?'新密码':'密码'}<input name="password" type="password" autocomplete="${mode==='signup'||recovery?'new-password':'current-password'}" minlength="8" required></label>
@@ -28,6 +53,8 @@ function renderForm(message='') {
     event.preventDefault();const form=event.currentTarget,button=form.querySelector('button[type="submit"]'),status=form.querySelector('[role="status"]');
     button.disabled=true;status.textContent='正在连接…';
     try {
+      if(!navigator.onLine)throw new TypeError('Network offline');
+      makeClient();
       const data=new FormData(form),email=String(data.get('email')||'').trim(),password=String(data.get('password'));
       const result=mode==='recovery'?await client.auth.updateUser({password}):mode==='signup'?
         await client.auth.signUp({email,password,options:{emailRedirectTo:redirectTo}}):
@@ -35,39 +62,53 @@ function renderForm(message='') {
       if(result.error)throw result.error;
       form.querySelector('[name="password"]').value='';
       if(mode==='signup'&&!result.data.session){status.textContent='确认邮件已发送，请打开邮件中的链接，再登录。';return;}
-      guest=false;sessionStorage.removeItem(guestKey);readyResolve({guest:false});
+      clearGuest();readyResolve({guest:false});
       if(window.CloudSync)location.reload();
     }catch(error){status.textContent=humanError(error);}finally{button.disabled=false;}
   });
 }
 document.addEventListener('click',async event=>{
   const action=event.target.closest('[data-auth-action]')?.dataset.authAction;if(!action)return;
-  if(action==='guest'){guest=true;sessionStorage.setItem(guestKey,'1');readyResolve({guest:true});return;}
+  if(action==='guest'){guest=true;sessionStorage.setItem(guestKey,'1');localStorage.setItem(guestKey,'1');readyResolve({guest:true});return;}
   if(action==='switch'){mode=mode==='signup'?'login':'signup';renderForm();return;}
   if(action==='reset') {
     const form=document.getElementById('study-login'),email=form?.querySelector('[name="email"]')?.value.trim();
     const status=document.querySelector('.auth-message');
     if(!email){status.textContent='先填写邮箱，再点击忘记密码。';return;}
+    if(!navigator.onLine){status.textContent='请联网后重置密码。';return;}
+    makeClient();
     const {error}=await client.auth.resetPasswordForEmail(email,{redirectTo});
     status.textContent=error?humanError(error):'如果此邮箱已有账号，会收到重置密码邮件。';
   }
 });
 async function start() {
+  const authRedirect=/[?#&](code=|type=recovery|access_token=)/.test(location.search+location.hash);
+  if(guest&&!authRedirect){readyResolve({guest:true});return;}
+  if(authRedirect)clearGuest();
+  const cached=localIdentity();
+  if(cached&&!authRedirect){
+    readyResolve({guest:false,userId:cached.id,offline:true});
+    if(navigator.onLine)makeClient();
+    return;
+  }
+  if(!navigator.onLine){renderForm();return;}
   if(config.url&&config.publishableKey?.startsWith('sb_publishable_')) {
-    client=createClient(config.url,config.publishableKey,{auth:{flowType:'pkce',persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
-    client.auth.onAuthStateChange(event=>{if(event==='PASSWORD_RECOVERY'){mode='recovery';renderForm();}});
+    makeClient();
     const {data,error}=await client.auth.getSession();
-    if(!error&&data.session&&mode!=='recovery'&&!guest){readyResolve({guest:false});return;}
+    if(!error&&data.session&&mode!=='recovery'&&!guest){readyResolve({guest:false,userId:data.session.user.id});return;}
   }
   if(guest){readyResolve({guest:true});return;}
   renderForm();
 }
-window.CloudBackend={ready,isGuest:()=>guest,email:async()=>(await client?.auth.getSession())?.data.session?.user.email||'',
-  signIn(){sessionStorage.removeItem(guestKey);location.reload();},
-  async signOut(){const {error}=await client.auth.signOut();if(error)throw error;sessionStorage.removeItem(guestKey);},
+window.CloudBackend={ready,isGuest:()=>guest,email:async()=>localIdentity()?.email||(await client?.auth.getSession())?.data.session?.user.email||'',
+  signIn(){clearGuest();location.reload();},
+  async signOut(){if(!navigator.onLine)throw new Error('请联网完成同步后退出登录');const {error}=await makeClient().auth.signOut();if(error)throw error;clearGuest();},
   async request(method,changes) {
+    if(!navigator.onLine)throw new TypeError('Network offline');
+    makeClient();
     if(guest||!client)throw new Error('登录后开启同步');
     const {data:session,error:authError}=await client.auth.getSession();
+    if(authError&&/fetch|network|abort|timeout|retry/i.test(authError.message||''))throw new TypeError('Network unavailable');
     if(authError||!session.session)throw new Error('请重新登录');
     const {data,error}=await client.rpc('study_sync',{p_changes:method==='POST'?changes:[]}).abortSignal(AbortSignal.timeout(20000));
     if(error){if(error.code==='PGRST301')throw new Error('请重新登录');throw new Error(humanError(error));}
@@ -75,4 +116,5 @@ window.CloudBackend={ready,isGuest:()=>guest,email:async()=>(await client?.auth.
     return data;
   }
 };
+window.addEventListener('online',()=>{if(!guest)makeClient();});
 start().catch(error=>renderForm(humanError(error)));
