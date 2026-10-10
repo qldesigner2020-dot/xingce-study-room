@@ -57,6 +57,21 @@ async function storeFile(file,signal) {
     await cache.put(url,response);
   } finally {clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
 }
+async function installFiles(files) {
+  let index=0;
+  const controller=new AbortController();
+  // Thousands of small formula images make serial upgrades very slow. Bound
+  // concurrency and settle every lane before failing the install, so a failed
+  // new package never activates and pending writes do not outlive the event.
+  const results=await Promise.allSettled(Array.from({length:Math.min(4,files.length)},async()=>{
+    while(index<files.length&&!controller.signal.aborted) {
+      try {await storeFile(files[index++],controller.signal);}
+      catch(error){controller.abort();throw error;}
+    }
+  }));
+  const failed=results.find(result=>result.status==='rejected');
+  if(failed)throw failed.reason;
+}
 async function inventory() {
   const urls=new Set();
   for(const name of [SHELL,DATA])for(const r of await (await caches.open(name)).keys())urls.add(r.url);
@@ -96,14 +111,12 @@ async function download(target) {
   await broadcast();
 }
 self.addEventListener('install',event=>event.waitUntil((async()=>{
-  for(const file of PACKAGE.files.filter(f=>f.group==='core'))await storeFile(file);
+  await installFiles(PACKAGE.files.filter(f=>f.group==='core'));
   const full=await previousComplete(),reusable=await (reusePromise||=previousFiles());
   // Browsers can activate a waiting worker after all old windows close. Before
   // it becomes installable, preserve the old package's completeness (atomic
   // update) and reuse every unchanged file of a partial package as well.
-  for(const file of PACKAGE.files.filter(f=>f.group==='data')) {
-    if(full||reusable.has(file.url+'|'+file.integrity))await storeFile(file);
-  }
+  await installFiles(PACKAGE.files.filter(f=>f.group==='data'&&(full||reusable.has(f.url+'|'+f.integrity))));
   await (await caches.open(SHELL)).put(MANIFEST_URL,new Response(JSON.stringify(PACKAGE),{headers:{'Content-Type':'application/json'}}));
   // A new worker waits. Existing exercises and the old full offline package
   // remain available until the user chooses to apply the update.

@@ -19,16 +19,20 @@ class Cache {
 }
 const caches={values:new Map(),async open(n){if(!this.values.has(n))this.values.set(n,new Cache());return this.values.get(n);},
   async keys(){return [...this.values.keys()];},async delete(n){return this.values.delete(n);}};
-let network=true,missing='',requests=0,activated=0;
+let network=true,missing='',requests=0,activated=0,latency=0,inFlight=0,peak=0;
 const create=pack=>{
   const handlers={};
   const self={location:{href:origin+'sw.js'},addEventListener:(name,fn)=>handlers[name]=fn,
     clients:{claim:async()=>{},matchAll:async()=>[]},skipWaiting:async()=>activated++};
   const sandbox={self,caches,URL,Request,Response,AbortController,DOMException,setTimeout,clearTimeout,
-    async fetch(url,options){requests++;if(!network||url.endsWith(missing||'NEVER'))throw new TypeError('offline');
-      const text=contents.get(url.slice(origin.length));assert.ok(text,'only allowlisted resources may be requested');
-      assert.equal(options.integrity,'sha256-'+crypto.createHash('sha256').update(text).digest('base64'));
-      return new Response(text);}};
+    async fetch(url,options){requests++;inFlight++;peak=Math.max(peak,inFlight);
+      try {
+        if(latency)await new Promise(resolve=>setTimeout(resolve,latency));
+        if(!network||url.endsWith(missing||'NEVER'))throw new TypeError('offline');
+        const text=contents.get(url.slice(origin.length));assert.ok(text,'only allowlisted resources may be requested');
+        assert.equal(options.integrity,'sha256-'+crypto.createHash('sha256').update(text).digest('base64'));
+        return new Response(text);
+      }finally{inFlight--;}}};
   vm.runInNewContext(fs.readFileSync('client/sw.js','utf8').replace('/* OFFLINE_PACKAGE */ null',JSON.stringify(pack)),sandbox);
   const lifecycle=async name=>{let work;handlers[name]({waitUntil:p=>work=p});await work;};
   const message=async(type,target)=>{
@@ -72,6 +76,22 @@ assert.equal(await (await first.fetchResource('assets/app.js')).text(),'app-v1')
 await second.message('CLEAR');assert.equal((await second.message('STATUS')).complete,false);
 assert.equal((await second.message('STATUS')).shellReady,true);
 await assert.rejects(second.message('DOWNLOAD','unknown'),/试卷不存在/);
+
+// Large bank upgrades must make progress concurrently without unbounded network
+// requests. Failed installs settle all lanes and preserve the previous package.
+network=true;latency=2;peak=0;
+for(let i=0;i<10;i++)contents.set(`assets/install-${i}.js`,`install-${i}`);
+const parallel=create(manifest('parallel'));
+await parallel.lifecycle('install');
+assert.equal(peak,4,'install requests are parallel and limited to four');
+assert.equal(inFlight,0);
+assert.equal((await parallel.message('STATUS')).complete,true);
+for(let i=0;i<6;i++)contents.set(`assets/failure-${i}.js`,`failure-${i}`);
+missing='failure-0.js';
+await assert.rejects(create(manifest('parallel-failure')).lifecycle('install'));
+assert.equal(inFlight,0,'failed installation waits for every pending request');
+assert.equal((await parallel.message('STATUS')).complete,true);
+missing='';latency=0;
 
 // Exercise the real login adapter: cold guest startup and expired authenticated
 // sessions never require a network refresh to open this device's records.
