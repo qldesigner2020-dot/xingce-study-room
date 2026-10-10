@@ -19,6 +19,7 @@ await fs.mkdir(folder); // Never overwrite a previously delivered package.
 
 // Copy public static source only. Never copy dist, account config, logs or practice history.
 const excluded = new Set(['index.html', 'assets/cloud-sync.js', 'assets/auth.css',
+  'update.html', 'assets/site-update.js',
   'assets/vendor/pdf-fonts.js', 'assets/vendor/pdf-fonts-lite.js',
   'assets/vendor/pdf-font-coverage.js']);
 async function filesIn(dir) {
@@ -121,6 +122,10 @@ ${catalog.modules.join('、')}，已导入原库中各卷的全部现有题目�
 真题套卷、专项训练、实时计时、暂停、手写标注、选项排除、错题本、收藏、
 待复查、熟悉程度与掌握自评、个人复盘、试题打印、PDF 与带图 Markdown 导出。
 PDF 使用电脑自带字体，不下载中文字体包。
+专项训练可选择年份、地区及细分考点，实时预览按原卷收录比例分配的题量。
+默认优先抽未做题；资料同材料题相邻。细分考点为题面/解析规则识别，
+不是官方人工标签，无法可靠识别的题保留为“未细分”。
+专项范围、考点、来源、自评及复盘描述会随导出保留。
 
 记录与备份
 练习记录只保存在使用者自己的浏览器，本分享包不含任何人的练习记录或账号。
@@ -138,7 +143,9 @@ PDF 使用电脑自带字体，不下载中文字体包。
 题目保留原卷名、题号、题库编号及解析来源信息。
 题库整理来源：开源题库。本包为现有网站的离线版本。
 第三方 PDF 程序许可保留在 assets/vendor/ 目录。
-在线版本：https://qldesigner2020-dot.github.io/xingce-study-room/
+本 ZIP 用于电脑浏览器；iPad/手机请使用在线版本，不在手机解压打开本包。
+在线版本：https://baohuafen-trainer-d0dbbv55209602-1476347142.tcloudbaseapp.com/xingce-study-room/
+在线版本支持 iPad 横屏、竖屏及分屏布局。
 
 打包日期：${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}
 `);

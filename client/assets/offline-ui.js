@@ -21,11 +21,11 @@
   }
   function statusHtml() {
     if(!supported)return '';
-    const label=current?.complete?(navigator.onLine?'已可离线':'离线可用'):'手机离线';
-    return `<button class="btn btn-sm offline-entry" data-offline-action="open">${label}</button>`;
+    const label=next?'更新网站':current?.complete?(navigator.onLine?'已可离线':'离线可用'):'手机离线';
+    return `<button class="btn btn-sm offline-entry ${next?'btn-primary':''}" data-offline-action="${next?'apply':'open'}">${label}</button>`;
   }
   function paint() {
-    document.querySelectorAll('.offline-entry').forEach(el=>el.textContent=current?.complete?(navigator.onLine?'已可离线':'离线可用'):'手机离线');
+    document.querySelectorAll('.offline-entry').forEach(el=>{el.textContent=next?'更新网站':current?.complete?(navigator.onLine?'已可离线':'离线可用'):'手机离线';el.dataset.offlineAction=next?'apply':'open';el.classList.toggle('btn-primary',!!next);});
     const host=document.querySelector('#offline-panel .modal-body');if(!host)return;
     const state=next||current,full=current?.complete;
     const title=state?.running?'正在下载到手机':next?'有新版本可下载':full?'断网也能接着练':'把题库带到手机里';
@@ -54,7 +54,7 @@
       ${problem||state?.error?`<p class="offline-error" role="alert">${safe(problem||state.error)}</p>`:''}
       <div class="offline-actions">${state?.running?'<button class="btn" data-offline-action="pause">暂停下载</button>':
         `<button class="btn btn-primary" data-offline-action="download" ${busy||!state||!navigator.onLine||state.complete?'disabled':''}>${next?'下载更新':state?.count>40?'继续下载完整题库':'下载完整题库'}</button>`}
-      ${next?`<button class="btn" data-offline-action="apply" ${busy||state?.running||full&&!next.complete?'disabled':''}>应用更新</button>`:''}
+      ${next?`<button class="btn" data-offline-action="apply" ${busy||state?.running||!navigator.onLine&&!next.complete?'disabled':''}>更新网站</button>`:''}
       <button class="btn" data-offline-action="verify" ${busy?'disabled':''}>检查下载</button></div></section>
       ${!next&&!state?.running&&!full?`<details class="offline-partial"><summary>只下载一套试卷</summary><label for="offline-paper">选择试卷（包含题图和解析）</label><select id="offline-paper">${catalog.map(p=>`<option value="${safe(p.id)}" ${selected===p.id?'selected':''}>${cached.has(p.id)?'已下载 · ':''}${safe(p.name)}</option>`).join('')}</select><button class="btn" data-offline-action="paper" ${busy||!navigator.onLine?'disabled':''}>下载所选试卷</button></details>`:''}
       <section class="offline-install"><h3>${standalone()?'主屏幕应用':'添加到手机主屏幕'}</h3><p>${hint}</p>
@@ -95,7 +95,8 @@
       }
       if(action==='apply') {
         await refresh();
-        if(current?.complete&&!next?.complete)throw new Error('请先下载完整更新，旧离线题库会一直保留');
+        if(!next?.shellReady||!registration.waiting)throw new Error('新版网站尚未准备好，请稍后重试');
+        if(!navigator.onLine&&!next.complete)throw new Error('请联网更新网站，新题目和图片将按需加载');
         if(!confirm('现在更新应用？当前作答已在本机保存，更新后可继续练习。'))return;
         const waiting=registration.waiting;
         navigator.serviceWorker.addEventListener('controllerchange',()=>location.reload(),{once:true});
@@ -123,5 +124,6 @@
     const watch=worker=>worker?.addEventListener('statechange',()=>refresh().catch(()=>{}));
     watch(reg.installing);reg.addEventListener('updatefound',()=>watch(reg.installing));
     await navigator.serviceWorker.ready;await refresh();
+    await reg.update();
   }).catch(error=>{problem='当前浏览器未能保存离线应用，请联网刷新或换用系统浏览器。';console.warn('Offline registration:',error.message);paint();});
 })();

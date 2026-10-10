@@ -1,0 +1,61 @@
+/* Exam workbench: scope first, focused tags, an always visible allocation. */
+.training-scope-head,.training-preview-heading,.training-module-heading,.training-category-heading {display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.training-scope h2,.training-module-heading h2,.training-preview h2 {font-size:19px;font-weight:700;}
+.training-scope-head span {margin-left:auto;color:var(--text-2);font-size:14px;}
+.training-filters {display:flex;align-items:center;gap:24px;flex-wrap:wrap;margin-top:18px;}
+.training-region {display:flex;align-items:center;gap:12px;font-weight:600;}
+.training-region select {min-width:160px;min-height:44px;font-size:15px;}
+.training-years {display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+.training-years .check {min-height:44px;}
+.training-years>.dim {font-size:13px;margin-left:6px;}
+.training-layout {display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:24px;align-items:start;margin-top:24px;}
+.training-layout>.card {margin:0;min-width:0;}
+.training-modules {display:flex;flex-wrap:wrap;gap:8px;padding:20px;border-bottom:1px solid var(--border);background:var(--panel-2);border-radius:var(--radius) var(--radius) 0 0;}
+.training-modules .btn {min-height:44px;font-size:14px;flex:1 0 calc(33.33% - 8px);white-space:nowrap;}
+.training-module-heading {padding:22px 24px 8px;}
+.training-module-heading>.row {margin-left:auto;gap:8px;}
+.training-categories {padding:0 24px;}
+.training-category {padding:22px 0;border-bottom:1px solid var(--border);}
+.training-category:last-child {border-bottom:0;}
+.training-category h3 {font-size:16px;}
+.training-category-heading>.dim {font-size:13px;}
+.training-category-heading>.btn {margin-left:auto;min-height:40px;}
+.training-tags {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px;}
+.training-tags .check {min-width:0;min-height:48px;padding:11px 12px;font-size:14px;gap:8px;}
+.training-tags .check:has(input:disabled) {opacity:.6;}
+.training-tags input {width:17px;height:17px;flex-shrink:0;accent-color:var(--accent);}
+.training-tags .n {margin-left:auto;font-size:13px;}
+.training-classification-note {margin:4px 24px 24px;font-size:13px;color:var(--text-2);line-height:1.8;}
+.training-preview {position:sticky;top:20px;padding:24px;}
+.training-preview-heading .btn {margin-left:auto;}
+.training-total {display:flex;align-items:center;justify-content:space-between;margin-top:24px;font-weight:600;}
+.training-total input {width:105px;min-height:44px;font-size:18px;text-align:center;}
+.training-presets {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:12px;}
+.training-presets .btn {min-height:44px;padding:8px 4px;}
+.training-unseen {display:flex;width:100%;min-height:44px;margin-top:16px;font-size:14px;}
+.training-allocation-note,.training-footer-note {font-size:13px;color:var(--text-2);line-height:1.8;margin:16px 0;}
+.training-result-total {display:flex;align-items:baseline;gap:14px;padding:20px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);}
+.training-result-total strong {font:700 36px 'Microsoft YaHei','PingFang SC',sans-serif;}
+.training-result-total span {font-size:14px;color:var(--text-2);}
+.training-allocation section {padding:14px 0;border-bottom:1px solid var(--border);}
+.training-allocation-title,.training-allocation-row {display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:14px;}
+.training-allocation-row {margin-top:8px;color:var(--text-2);font-size:13px;}
+.training-shortage {font-size:14px;color:var(--warn);}
+.training-start {width:100%;min-height:50px;font-size:16px;margin-top:22px;}
+.training-footer-note {margin-bottom:0;}
+@media(max-width:1024px) {
+ .training-layout {grid-template-columns:1fr;gap:20px;}
+ .training-preview {position:static;}
+ .training-allocation {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px;}
+ .training-scope-head span {margin-left:0;}
+ .training-modules .btn {flex-basis:calc(33.33% - 8px);}
+}
+@media(max-width:600px) {
+ .training-filters {gap:16px;}.training-region,.training-region select {width:100%;}
+ .training-region {justify-content:space-between;}.training-region select {max-width:220px;}
+ .training-modules {padding:16px;gap:8px;}.training-modules .btn {flex-basis:calc(50% - 8px);font-size:13px;}
+ .training-module-heading {padding:18px 16px 4px;gap:10px;}.training-module-heading>.row {margin-left:0;width:100%;}
+ .training-categories {padding:0 16px;}.training-tags {gap:8px;}.training-tags .check {font-size:13px;padding:10px 8px;}
+ .training-tags input {width:16px;height:16px;}.training-classification-note {margin-left:16px;margin-right:16px;}
+ .training-preview {padding:20px;}.training-allocation {grid-template-columns:1fr;}
+}

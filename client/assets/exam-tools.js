@@ -31,7 +31,7 @@ const ExamTools = (() => {
       <details class="action-menu tool-menu"><summary class="btn btn-sm"><span data-tool-more>更多</span></summary><div class="menu-body"><div class="mobile-annotation-tools"><button class="btn" data-exam-tool="underline" aria-pressed="${tool === 'underline'}">划线</button><button class="btn" data-exam-tool="highlight" aria-pressed="${tool === 'highlight'}">高亮</button><button class="btn" data-exam-tool="eraser" aria-pressed="${tool === 'eraser'}">橡皮</button></div><button class="btn btn-ghost" data-exam-command="clear">清除全部标注</button><div class="ink-colors">
       <button class="ink-swatch" data-exam-color="#b54836" aria-label="红色笔" aria-pressed="${inkColor === '#b54836'}" style="--swatch:#b54836"></button><button class="ink-swatch" data-exam-color="#252a26" aria-label="黑色笔" aria-pressed="${inkColor === '#252a26'}" style="--swatch:#252a26"></button>
       </div><label class="paper-size">字号 <select data-paper-size aria-label="试卷字号">${[16, 18, 19, 20, 22, 24].map(n => `<option value="${n}" ${SETTINGS.paperSize === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-      <button class="btn btn-ghost" data-exam-command="fullscreen">全屏专注</button></div></details></div></div>`;
+      <label class="paper-size tablet-only"><input type="checkbox" data-pen-only ${SETTINGS.penOnly?'checked':''}>仅用手写笔写</label><button class="btn btn-ghost" data-exam-command="fullscreen">全屏专注</button></div></details></div></div>`;
   }
   function current() {
     if (typeof S === 'undefined' || !S.session || S.session.paused || S.session.submitted || route.name !== 'quiz' || document.querySelector('.modal-bg')) return null;
@@ -122,7 +122,7 @@ const ExamTools = (() => {
   }
   function setToolClasses() {
     const paper = document.querySelector('.exam-paper');
-    if (paper) paper.dataset.annotationTool = tool;
+    if (paper) {paper.dataset.annotationTool = tool;paper.dataset.annotationPenOnly=String(!!SETTINGS.penOnly);}
     document.querySelectorAll('[data-exam-tool]').forEach(b => { b.classList.toggle('active', b.dataset.examTool === tool); b.setAttribute('aria-pressed', String(b.dataset.examTool === tool)); });
     const more = document.querySelector('[data-tool-more]');
     if (more) { more.textContent = tool === 'underline' ? '划线' : tool === 'highlight' ? '高亮' : tool === 'eraser' ? '橡皮' : '更多'; more.parentElement.classList.toggle('active', ['underline','highlight','eraser'].includes(tool)); }
@@ -214,6 +214,7 @@ const ExamTools = (() => {
     }
   }, true);
   document.addEventListener('change', e => {
+    if(e.target.matches('[data-pen-only]')){SETTINGS.penOnly=e.target.checked;saveSettings();setToolClasses();}
     if (e.target.matches('[data-paper-size]')) {
       SETTINGS.paperSize = +e.target.value; saveSettings();
       document.querySelector('.exam-view')?.style.setProperty('--paper-size', `${SETTINGS.paperSize}px`);
@@ -229,6 +230,8 @@ const ExamTools = (() => {
     if (mark) { e.preventDefault(); removeMark(mark.dataset.markId); }
   });
   document.addEventListener('pointerdown', e => {
+    if(drawing&&e.pointerId!==drawing.pointer)return;
+    if(typeof SETTINGS!=='undefined'&&SETTINGS.penOnly&&e.pointerType==='touch')return;
     if (e.target.closest('button')) return;
     const zone = e.target.closest('.exam-view [data-mark-zone]') || e.target.closest('.exam-view .opt')?.querySelector('[data-mark-zone]');
     if (!zone || !current()) return;
@@ -259,7 +262,7 @@ const ExamTools = (() => {
     if (d.stroke.points.length > 1600) d.stroke.points = d.stroke.points.filter((_,i) => i % 2 === 0);
     d.path.setAttribute('d', d.stroke.points.map((p,i) => `${i ? 'L' : 'M'}${(d.rect.left-d.zoneRect.left+p[0]*d.font).toFixed(2)},${(d.rect.top-d.zoneRect.top+p[1]*d.font).toFixed(2)}`).join(' '));
   }
-  document.addEventListener('pointermove', e => { if (drawing) { e.preventDefault(); addPoint(e); } });
+  document.addEventListener('pointermove', e => { if (drawing&&e.pointerId===drawing.pointer) { e.preventDefault();const events=e.getCoalescedEvents?.()||[];for(const point of events.length?events:[e])addPoint(point); } });
   function finishDrawing(e) {
     if (!drawing || e.pointerId !== drawing.pointer) return;
     const a = current(), d = drawing; drawing = null;

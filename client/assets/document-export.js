@@ -18,7 +18,7 @@
       let type='',material='';
       const qs=doc.questions.map((q,i)=>{
         const heading=type!==q.type?'<h2>'+esc(q.type)+'</h2>':'';
-        const mat=q.material&&(q.material!==material||heading)?'<section class="material"><h3>材料</h3>'+embed(q.material,images)+'</section>':'';
+        const mat=q.material&&q.material!==material?'<section class="material"><h3>材料</h3>'+embed(q.material,images)+'</section>':'';
         type=q.type;material=q.material;
         const opts=imageOptions(q)?'':'<div class="options">'+q.options.map(o=>'<div class="option"><b>'+esc(o.k)+'.</b><div>'+embed(o.t,images)+'</div></div>').join('')+'</div>';
         const r=q.result;
@@ -29,7 +29,8 @@
           (r.note?'<div class="personal"><h3>我的草稿 / 思路</h3><p>'+esc(r.note)+'</p></div>':'')+
           (r.reflection?'<div class="personal"><h3>我的复盘描述</h3><p>'+esc(r.reflection)+'</p></div>':'')+
           (r.explanation?'<div class="explanation"><h3>参考解析</h3>'+embed(r.explanation,images)+'</div>':'')+'</section>':'';
-        return heading+mat+'<article class="question"><div class="stem"><b class="number">'+(i+1)+'.</b><div>'+embed(q.stem,images)+'</div></div>'+opts+review+'</article>';
+        const meta=[q.specialty?'专项考点：'+q.specialty:'',q.source?'真题来源：'+q.source:''].filter(Boolean);
+        return heading+mat+'<article class="question">'+(meta.length?'<p class="self-assessment">'+meta.map(esc).join('<br>')+'</p>':'')+'<div class="stem"><b class="number">'+(i+1)+'.</b><div>'+embed(q.stem,images)+'</div></div>'+opts+review+'</article>';
       }).join('');
       return '<section class="document'+(di?' next-document':'')+'"><h1>'+esc(doc.title)+'</h1>'+
         '<div class="sheet-info">'+(doc.report?'<span>复盘报告 · '+doc.questions.length+' 题</span><span>'+esc(doc.date||'')+'</span>':'<span>共 '+doc.questions.length+' 题</span><span>姓名：____________</span><span>日期：____________</span>')+'</div>'+
@@ -228,15 +229,18 @@
       doc.questions.forEach((q,i)=>{
         const newType=type!==q.type;
         if(newType)content.push({text:q.type,style:'type'});
-        if(q.material&&(q.material!==material||newType)) {
+        if(q.material&&q.material!==material) {
           content.push({text:'材料',style:'label'});content.push(...blocks(q.material));
         }
         type=q.type;material=q.material;
+        const meta=[q.specialty?'专项考点：'+q.specialty:'',q.source?'真题来源：'+q.source:''].filter(Boolean);
         const stemBlocks=blocks(q.stem);
         const imageHeight=stemBlocks.reduce((n,b)=>n+(b.image?b.height+8:0),0);
         const estimatedHeight=Math.ceil(plain(q.stem).length/38)*20+imageHeight;
-        content.push({columns:[{width:24,text:(i+1)+'.',bold:true},{width:'*',stack:stemBlocks}],
-          unbreakable:estimatedHeight<620,margin:[0,10,0,4]});
+        // Keep the source and concept with the stem across page breaks.
+        content.push({stack:[...meta.map(text=>({text,style:'selfAssessment'})),
+          {columns:[{width:24,text:(i+1)+'.',bold:true},{width:'*',stack:stemBlocks}]}],
+          unbreakable:estimatedHeight+meta.length*30<620,margin:[0,10,0,4]});
         if(!imageOptions(q))for(const o of q.options)content.push({columns:[{width:22,text:o.k+'.',bold:true},{width:'*',stack:blocks(o.t)}],margin:[24,3,0,3]});
         const r=q.result;
         if(r) {

@@ -62,17 +62,21 @@ network=true;missing='q1.js';await first.message('DOWNLOAD','all');
 status=await first.message('STATUS');assert.equal(status.complete,false);assert.equal(status.running,false);assert.match(status.error,/下载中断/);
 const before=requests;missing='';await first.message('DOWNLOAD','all');
 assert.equal(requests-before,1,'resume downloads only the missing file');assert.equal((await first.message('STATUS')).complete,true);
-// Updating a full offline package must complete before it can replace the old
-// worker, including automatic activation when all previous windows close.
+// A website update must not wait for question data. The older complete cache is
+// retained; matching data can be reused lazily and missing new data is explicit.
 contents.set('assets/app.js','app-v2');contents.set('data/pools/q1.js','specialist-v2');
-const broken=create(manifest('v2'));missing='q1.js';await assert.rejects(broken.lifecycle('install'));
-assert.equal((await first.message('STATUS')).complete,true,'failed new install preserves old full cache');
-const second=create(manifest('v2'));missing='';const updateStart=requests;await second.lifecycle('install');
-assert.equal(requests-updateStart,1,'update reuses every unchanged resource and resumes the interrupted install');
-assert.equal((await second.message('STATUS')).complete,true);
+const second=create(manifest('v2'));missing='q1.js';const updateStart=requests;await second.lifecycle('install');
+assert.equal(requests-updateStart,1,'website install downloads only changed core files');
+assert.equal((await second.message('STATUS')).complete,false);
+assert.equal((await second.message('STATUS')).shellReady,true);
+assert.equal((await first.message('STATUS')).complete,true,'new website install preserves old full cache');
 await second.message('ACTIVATE');assert.equal(activated,1);await second.lifecycle('activate');
 network=false;assert.equal(await (await second.fetchResource('assets/app.js')).text(),'app-v2');
 assert.equal(await (await first.fetchResource('assets/app.js')).text(),'app-v1');
+assert.equal(await (await second.fetchResource('assets/img/one.png')).text(),'image-one','unchanged data reused from preserved package');
+assert.equal((await second.fetchResource('data/pools/q1.js')).status,503,'changed data cannot return the old question version');
+network=true;missing='';await second.message('DOWNLOAD','all');
+assert.equal((await second.message('STATUS')).complete,true);
 await second.message('CLEAR');assert.equal((await second.message('STATUS')).complete,false);
 assert.equal((await second.message('STATUS')).shellReady,true);
 await assert.rejects(second.message('DOWNLOAD','unknown'),/试卷不存在/);
@@ -85,12 +89,12 @@ const parallel=create(manifest('parallel'));
 await parallel.lifecycle('install');
 assert.equal(peak,4,'install requests are parallel and limited to four');
 assert.equal(inFlight,0);
-assert.equal((await parallel.message('STATUS')).complete,true);
+assert.equal((await parallel.message('STATUS')).shellReady,true);
 for(let i=0;i<6;i++)contents.set(`assets/failure-${i}.js`,`failure-${i}`);
 missing='failure-0.js';
 await assert.rejects(create(manifest('parallel-failure')).lifecycle('install'));
 assert.equal(inFlight,0,'failed installation waits for every pending request');
-assert.equal((await parallel.message('STATUS')).complete,true);
+assert.equal((await parallel.message('STATUS')).shellReady,true);
 missing='';latency=0;
 
 // Exercise the real login adapter: cold guest startup and expired authenticated
@@ -132,4 +136,4 @@ let cloud=await cloudRun({guest:false,userId:'a',offline:true});assert.equal(clo
 cloud=await cloudRun({guest:false,userId:'b'});assert.equal(cloud.saved.has('qb.active.v1'),false,'another account cannot reopen previous local records');
 assert.ok(cloud.saved.has('qb.cloud.previous-account'),'previous account remains recoverable');
 assert.ok(!fs.readFileSync('client/sw.js','utf8').includes('localStorage'),'clearing downloads cannot clear user records');
-console.log('PASS phone offline: partial/full cache, cold navigation/images, failures/resume, atomic updates, guest/auth startup and account isolation');
+console.log('PASS website cache: shell-only updates, preserved older data, integrity reuse, bounded install, partial/full downloads, guest/auth startup and account isolation');

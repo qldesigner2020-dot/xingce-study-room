@@ -28,16 +28,6 @@ async function previousFiles() {
   }
   return result;
 }
-async function previousComplete() {
-  for(const name of await caches.keys()) {
-    if(!name.startsWith(PREFIX+'shell-')||name===SHELL)continue;
-    const response=await (await caches.open(name)).match(MANIFEST_URL);if(!response)continue;
-    const old=await response.json(),urls=new Set();
-    for(const key of [name,PREFIX+'data-'+old.version])for(const r of await (await caches.open(key)).keys())urls.add(r.url);
-    if(old.files.every(f=>urls.has(new URL(f.url,BASE).href)))return true;
-  }
-  return false;
-}
 async function storeFile(file,signal) {
   const cache=await cacheFor(file),url=absolute(file);
   if(await cache.match(url))return;
@@ -112,14 +102,11 @@ async function download(target) {
 }
 self.addEventListener('install',event=>event.waitUntil((async()=>{
   await installFiles(PACKAGE.files.filter(f=>f.group==='core'));
-  const full=await previousComplete(),reusable=await (reusePromise||=previousFiles());
-  // Browsers can activate a waiting worker after all old windows close. Before
-  // it becomes installable, preserve the old package's completeness (atomic
-  // update) and reuse every unchanged file of a partial package as well.
-  await installFiles(PACKAGE.files.filter(f=>f.group==='data'&&(full||reusable.has(f.url+'|'+f.integrity))));
+  // Online updates need only a coherent shell and current catalog. Thousands of
+  // question images must not delay a new website. Previous data caches remain
+  // available for integrity-matched reuse on demand or an explicit download.
   await (await caches.open(SHELL)).put(MANIFEST_URL,new Response(JSON.stringify(PACKAGE),{headers:{'Content-Type':'application/json'}}));
-  // A new worker waits. Existing exercises and the old full offline package
-  // remain available until the user chooses to apply the update.
+  // Wait for a deliberate reload so an exercise is never interrupted.
 })()));
 self.addEventListener('activate',event=>event.waitUntil((async()=>{
   await self.clients.claim();

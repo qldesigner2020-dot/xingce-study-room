@@ -53,6 +53,13 @@ const loads=[];
 const loader=async src=>{loads.push(src);throw new Error('Unexpected resource download: '+src);};
 vm.runInNewContext(documentSource,pdf.box);
 const docs=[{title:'行测练习',questions:[{type:'逻辑判断',stem:'题目',options:[],result:{reflection:'复盘',favorite:false}}]}];
+const sharedMaterial=[{title:'资料专项',questions:[
+  {type:'增长',material:'同一份统计材料',stem:'第一题',options:[],specialty:'增长率计算',source:'海南 2026 <回忆版>'},
+  {type:'比重',material:'同一份统计材料',stem:'第二题',options:[],specialty:'现期比重'}]}];
+const sharedHtml=pdf.root.DocumentExport.html(sharedMaterial,{},'资料专项');
+assert.equal((sharedHtml.match(/同一份统计材料/g)||[]).length,1,'adjacent questions share a passage across type headings');
+assert.ok(sharedHtml.includes('专项考点：增长率计算'));
+assert.ok(sharedHtml.includes('海南 2026 &lt;回忆版&gt;'),'source metadata is escaped and retained');
 const a=pdf.root.DocumentExport.pdf(docs,{},loader),b=pdf.root.DocumentExport.pdf(docs,{},loader);
 assert.equal(a,b);await a;
 await pdf.root.DocumentExport.pdf(docs,{},loader);assert.equal(builds,1);
@@ -73,4 +80,9 @@ renderPages=[{items:[{type:'line',item:{x:10,y:20,getAscenderHeight:()=>14,
 await pdf.root.DocumentExport.pdf([{title:'字形复用验证',questions:[]}],{},loader);
 assert.deepEqual(bitmapPaints,['A'],'repeated letters must share one native-font bitmap');
 assert.equal(bitmapDraws.length,2);
+await pdf.root.DocumentExport.pdf(sharedMaterial,{},loader);
+const questionBlock=definitions.at(-1).content.find(b=>b.stack?.some(n=>n.text==='专项考点：增长率计算'));
+assert.ok(questionBlock?.unbreakable,'metadata and stem must stay in the same page block');
+assert.ok(questionBlock.stack.some(n=>n.text==='真题来源：海南 2026 <回忆版>'));
+assert.ok(questionBlock.stack.some(n=>n.columns),'the kept block contains the question stem');
 console.log('PDF system fonts, cache invalidation, parallel images and offline export passed');

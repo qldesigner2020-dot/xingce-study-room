@@ -6,6 +6,7 @@
 
 const CAT = window.QB_CATALOG;
 const POOL_INDEX = window.QB_POOL_INDEX || {};
+const TRAINING_INDEX = window.QB_TRAINING_INDEX;
 
 /* ---------------------------------------------------------- 基础工具 */
 
@@ -116,14 +117,16 @@ async function loadKey(src, key) {
 /** 保证 refs 里涉及的题目都在 QMAP 中 */
 async function ensureQuestions(refs) {
   const todo = new Map();
-  for (const r of refs) {
-    if (!QMAP.has(r.qid)) todo.set(r.src + ':' + r.key, r);
-  }
-  for (const r of todo.values()) {
-    // 同一套卷/同一池可以并行请求，这里串行足够快且更稳
-    await loadKey(r.src, r.key);
-  }
-  return refs.map((r) => QMAP.get(r.qid)).filter(Boolean);
+  for (const r of refs) todo.set(r.src + ':' + r.key, r);
+  const needed=[...todo.values()];
+  for(let i=0;i<needed.length;i+=4)await Promise.all(needed.slice(i,i+4).map(r=>loadKey(r.src,r.key)));
+  return refs.map(r=>{
+    const container=r.src==='p'?window.QB_PAPERS?.[r.key]:window.QB_POOLS?.[r.key];
+    const candidates=(container?.questions||[]).filter(q=>q.qid===r.qid);
+    const q=candidates.find(q=>q.no===r.no)||candidates[0];
+    if(!q)throw new Error('题目来源未能加载：'+r.qid);
+    QMAP.set(r.qid,q);return q;
+  });
 }
 
 async function loadPaper(pid) {
@@ -333,6 +336,9 @@ function syncClock() {
 }
 
 /** 一组题目的统计 */
+function refTypeLabel(ref) {
+  return ref.specialty ? (ref.leaf?.split('::')[0] || ref.type || '未分类') + ' · ' + ref.specialty : ref.type || '未分类';
+}
 function summarize(sess, questions) {
   const qByQid = new Map(questions.map((q) => [q.qid, q]));
   const rows = sess.refs.map((ref) => {
@@ -345,13 +351,13 @@ function summarize(sess, questions) {
   const right = rows.filter((r) => r.correct);
   const byType = new Map();
   for (const r of rows) {
-    const t = r.ref.type || '未分类';
+    const t = refTypeLabel(r.ref);
     if (!byType.has(t)) byType.set(t, { type: t, n: 0, ans: 0, ok: 0, ms: 0 });
     const b = byType.get(t);
     b.n++;
     if (r.answered) b.ans++;
     if (r.correct) b.ok++;
-    b.ms += r.a.ms || 0;
+    if (r.answered) b.ms += r.a.ms || 0;
   }
   const types = CAT.typeOrder.filter((t) => byType.has(t)).concat([...byType.keys()].filter((t) => !CAT.typeOrder.includes(t)));
   return {
@@ -363,6 +369,7 @@ function summarize(sess, questions) {
     wrong: answered.length - right.length,
     accuracy: answered.length ? right.length / answered.length : 0,
     totalMs: rows.reduce((s, r) => s + (r.a.ms || 0), 0),
+    answeredMs: answered.reduce((s, r) => s + (r.a.ms || 0), 0),
     byType: types.map((t) => byType.get(t)),
   };
 }
@@ -470,7 +477,8 @@ function buildMarkdown(sessions, opts = {}) {
     out.push(`- 时间：${fmtTime(sess.createdAt)} → ${fmtTime(sess.submittedAt || Date.now())}`);
     out.push(`- 题量：${m.total}　作答：${m.answered}　未答：${m.unanswered}`);
     out.push(`- 正确：${m.right}　错误：${m.wrong}　正确率：${pct(m.right, m.answered)}（按已作答计）`);
-    out.push(`- 答题总用时：${fmtDur(m.totalMs)}　平均每题：${fmtSec(m.totalMs / (m.answered || m.total || 1))}`);
+    out.push(`- 答题总用时：${fmtDur(m.totalMs)}　已答题平均用时：${avgSec(m.answeredMs, m.answered)}`);
+    if(sess.training)out.push(`- 专项范围：${sess.training.region||'全部地区'}；${sess.training.years.length?sess.training.years.join('、'):'不限年份'}；参考 ${sess.training.papers} 份真题`, `- 组卷依据：${sess.training.basis}`);
     const reviewRows = summarize(sess, qs).rows;
     out.push(`- 自评统计：蒙对 ${reviewRows.filter(r => r.correct && r.a.review?.confidence === 'guess').length}；答对但犹豫 ${reviewRows.filter(r => r.correct && r.a.review?.confidence === 'hesitant').length}；记得答案 ${reviewRows.filter(r => r.a.review?.familiarity === 'remember').length}；答对且思路清楚 ${reviewRows.filter(r => r.correct && r.a.review?.confidence === 'clear' && r.a.review?.familiarity !== 'remember').length}；已答但未标注把握 ${reviewRows.filter(r => r.answered && !CONFIDENCE[r.a.review?.confidence]).length}`);
     out.push('');
@@ -492,6 +500,8 @@ function buildMarkdown(sessions, opts = {}) {
       const q = r.q;
       out.push(`### ${i + 1}. ${r.ref.type || '未分类'} · 模块第 ${r.ref.no} 题　\`qid ${r.ref.qid}\``);
       out.push('');
+      if(r.ref.specialty)out.push(`**专项考点**：${r.ref.specialty}（题面与解析规则识别）`, '');
+      if(q?.from?.file)out.push(`**真题来源**：${q.from.file}`, '');
       if (q && material && q.material) {
         out.push('**材料**');
         out.push('');
@@ -520,7 +530,7 @@ function buildMarkdown(sessions, opts = {}) {
       if (a.note) out.push('**我的草稿 / 思路**', '', a.note, '');
       if (a.reflection) out.push('**我的复盘描述（考生自述）**', '', a.reflection, '');
       if (expl && q && q.explanation) {
-        out.push('**官方解析**');
+        out.push('**参考解析**');
         out.push('');
         out.push(htmlToMd(q.explanation, '> ') || '> ');
         out.push('');
@@ -547,9 +557,11 @@ function buildJson(sessions, opts = {}) {
       createdAt: s.createdAt,
       submittedAt: s.submittedAt || null,
       summary: s.meta,
+      training: s.training,
       questions: exportRows(s, s.__questions || [], opts.scope).map((r) => ({
         qid: r.ref.qid,
         type: r.ref.type,
+        specialty: r.ref.specialty,
         module: r.ref.module,
         no: r.ref.no,
         stem: r.q ? stripTags(r.q.stem) : null,
@@ -638,9 +650,12 @@ const V = {
   /** 卷详情页里已勾选的题型：{ [pid]: Set<题型> } */
   paperSel: {},
   custom: {
-    types: new Set(),
-    total: 30,
-    years: new Set(Array.from({ length: CAT.yearRange[1] - CAT.yearRange[0] + 1 }, (_, i) => String(CAT.yearRange[0] + i))),
+    selected: new Set(SETTINGS.training?.selected || []),
+    total: SETTINGS.training?.total || 30,
+    region: SETTINGS.training?.region || '',
+    activeModule: SETTINGS.training?.activeModule || '数量关系',
+    preferUnseen: SETTINGS.training?.preferUnseen !== false,
+    years: new Set(SETTINGS.training?.years || Array.from({ length: CAT.yearRange[1] - CAT.yearRange[0] + 1 }, (_, i) => String(CAT.yearRange[0] + i))),
   },
   historySel: new Set(),
   wrongFilter: '',
@@ -895,79 +910,51 @@ async function viewPaper(pid) {
 
 /* ---------------------------------------------------------- 视图：随机刷题 */
 
-function viewCustom() {
-  const c = V.custom;
-  const poolSizes = {};
-  const selectedMask = [...c.years].reduce((mask, y) => mask | (1 << (+y - CAT.yearRange[0])), 0);
-  for (const t of CAT.typeOrder) {
-    const info = POOL_INDEX[t];
-    poolSizes[t] = info?.yearMasks && selectedMask
-      ? Object.entries(info.yearMasks).reduce((n, [mask, count]) => n + ((+mask & selectedMask) ? count : 0), 0)
-      : info?.count || 0;
-  }
-
-  const years = Array.from({ length: CAT.yearRange[1] - CAT.yearRange[0] + 1 }, (_, i) => String(CAT.yearRange[0] + i));
-  const selected = [...c.types];
-  const alloc = allocate(selected, poolSizes, Math.min(c.total, selected.reduce((s, t) => s + (poolSizes[t] || 0), 0)));
-  const allocMap = Object.fromEntries(selected.map((t, i) => [t, alloc[i]]));
-  const realTotal = alloc.reduce((a, b) => a + b, 0);
-  const maxTotal = selected.reduce((s, t) => s + (poolSizes[t] || 0), 0);
-
-  const byModule = new Map();
-  for (const t of CAT.typeOrder) {
-    const m = moduleOfType(t);
-    if (!byModule.has(m)) byModule.set(m, []);
-    byModule.get(m).push(t);
-  }
-
-  return `${topbar('custom')}
-  <header class="page-heading"><h1>专项训练</h1><p>选择题型，集中突破。</p></header>
-
-  <div class="card card-pad" style="margin-top:18px">
-    <div class="field"><span class="lbl">1. 选择题型（可多选）</span>
-      ${[...byModule.entries()].map(([m, ts]) => `<div class="custom-module" style="margin-top:8px">
-        <div class="tiny muted" style="margin-bottom:6px">${esc(m)}</div>
-        <div class="row">${ts.map((t) => `<label class="check ${c.types.has(t) ? 'on' : ''}">
-          <input type="checkbox" data-act="ct" data-t="${esc(t)}" ${c.types.has(t) ? 'checked' : ''}>
-          ${esc(t)} <span class="n">${poolSizes[t]}</span></label>`).join('')}</div>
-      </div>`).join('')}
-      <div class="row" style="margin-top:10px">
-        <button class="btn btn-sm btn-ghost" data-act="ct-all">全选</button>
-        <button class="btn btn-sm btn-ghost" data-act="ct-none">清空</button>
-        ${CAT.modules.map(m => `<button class="btn btn-sm btn-ghost" data-act="ct-module" data-m="${esc(m)}">只选${esc(m)}</button>`).join('')}
-      </div>
-    </div>
-  </div>
-
-  <div class="card card-pad">
-    <div class="field"><span class="lbl">2. 题量</span>
-      <div class="row">
-        <input type="number" min="1" max="${maxTotal || 1}" value="${c.total}" data-act="ctotal" style="width:110px">
-        ${[10, 20, 30, 50, 100].map((n) => `<button class="btn btn-sm" data-act="ctotal-set" data-n="${n}">${n}</button>`).join('')}
-        <span class="small muted">可选上限 ${maxTotal}</span>
-      </div>
-    </div>
-    <div class="field" style="margin-top:16px"><span class="lbl">3. 年份范围（全部取消时不限年份）</span>
-      <div class="row">${years.map((y) => `<label class="check ${c.years.has(y) ? 'on' : ''}">
-        <input type="checkbox" data-act="cy" data-y="${y}" ${c.years.has(y) ? 'checked' : ''}>${y}</label>`).join('')}</div>
-    </div>
-  </div>
-
-  <div class="card card-pad">
-    <div class="row"><b>本次将抽取</b><span class="chip acc">${realTotal} 题</span>
-      ${realTotal < c.total ? `<span class="small" style="color:var(--warn)">（受所选题型题量上限限制，实际少于 ${c.total}）</span>` : ''}
-    </div>
-    ${selected.length ? `<table class="tbl pv" style="margin-top:10px">
-      <thead><tr><th>题型</th><th>所属模块</th><th class="num">可用</th><th class="num">抽取</th></tr></thead>
-      <tbody>${selected.map((t) => `<tr><td>${esc(t)}</td><td class="dim">${esc(moduleOfType(t))}</td><td class="num muted">${poolSizes[t]}</td><td class="num"><b>${allocMap[t]}</b></td></tr>`).join('')}</tbody>
-    </table>` : '<div class="small muted" style="margin-top:8px">请先选择题型</div>'}
-    <div class="row" style="margin-top:18px">
-      <button class="btn btn-lg btn-primary" data-act="start-custom" ${realTotal ? '' : 'disabled'}>开始刷题</button>
-      <span class="small muted">交卷后才能查看答案与解析</span>
-    </div>
-  </div>`;
+function saveCustom() {
+  const c=V.custom;
+  SETTINGS.training={selected:[...c.selected],total:c.total,region:c.region,activeModule:c.activeModule,preferUnseen:c.preferUnseen,years:[...c.years]};
+  saveSettings();
 }
-
+function trainingOptions() {const c=V.custom;return {...c,selected:[...c.selected],years:[...c.years]};}
+function viewCustom() {
+  if(!TRAINING_INDEX||!window.TrainingTools)return topbar('custom')+'<div class="card card-pad"><h1>专项训练需要更新</h1><p>请应用网站更新后重新打开。</p></div>';
+  const c=V.custom,options=trainingOptions(),scope=TrainingTools.scope(TRAINING_INDEX,CAT,options),plan=TrainingTools.plan(TRAINING_INDEX,CAT,options);
+  const years=Array.from({length:CAT.yearRange[1]-CAT.yearRange[0]+1},(_,i)=>String(CAT.yearRange[1]-i));
+  const regions=[...new Set(CAT.papers.map(p=>p.region))].sort((a,b)=>a.localeCompare(b,'zh'));
+  const visible=TRAINING_INDEX.groups.filter(g=>g.module===c.activeModule);
+  const selectedGroups=TRAINING_INDEX.groups.filter(g=>g.leaves.some(t=>c.selected.has(t.id)));
+  const selectedModules=new Set(selectedGroups.map(g=>g.module));
+  const leafCounts=scope.uniqueCount;
+  const countsFor=g=>g.leaves.reduce((n,t)=>n+(scope.counts[t.id]||0),0);
+  return topbar('custom')+
+  '<header class="page-heading"><h1>专项训练</h1><p>按考点练习，按真题比例组卷。</p></header>'+String.raw`
+  <section class="card card-pad training-scope" aria-label="真题范围">
+    <div class="training-scope-head"><h2>真题范围</h2><span>${scope.papers.length} 份回忆版 · ${leafCounts.toLocaleString()} 道去重题</span></div>
+    <div class="training-filters"><label class="training-region">地区<select data-act="cr" aria-label="专项真题地区"><option value="">全部地区</option>${regions.map(r=>'<option value="'+esc(r)+'" '+(c.region===r?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>
+    <div class="training-years" role="group" aria-label="专项真题年份">${years.map(y=>'<label class="check '+(c.years.has(y)?'on':'')+'"><input type="checkbox" data-act="cy" data-y="'+y+'" '+(c.years.has(y)?'checked':'')+'>'+y+'</label>').join('')}<span class="dim">不选则不限年份</span></div></div>
+  </section>
+  <div class="training-layout"><section class="card training-selector" aria-label="专项考点选择">
+    <div class="training-modules" role="group" aria-label="查看模块">${CAT.modules.map(m=>'<button class="btn '+(c.activeModule===m?'btn-primary':'btn-ghost')+'" data-act="cm-view" data-m="'+esc(m)+'" aria-pressed="'+(c.activeModule===m)+'">'+esc(m)+'</button>').join('')}</div>
+    <div class="training-module-heading"><h2>${esc(c.activeModule)}</h2><div class="row"><button class="btn btn-sm" data-act="ct-module" data-m="${esc(c.activeModule)}">全选本模块</button><button class="btn btn-sm btn-ghost" data-act="ct-module-clear" data-m="${esc(c.activeModule)}">清空本模块</button></div></div>
+    <div class="training-categories">${visible.map(g=>{
+      const usable=g.leaves.filter(t=>scope.counts[t.id]),all=usable.length&&usable.every(t=>c.selected.has(t.id)),some=g.leaves.some(t=>c.selected.has(t.id));
+      return '<section class="training-category"><div class="training-category-heading"><h3>'+esc(g.label)+'</h3><span class="dim">'+countsFor(g).toLocaleString()+' 题</span><button class="btn btn-sm '+(some?'on':'btn-ghost')+'" data-act="ct-group" data-t="'+esc(g.id)+'" aria-pressed="'+!!all+'" '+(!usable.length?'disabled':'')+'>'+(all?'取消本题型':'选全部')+'</button></div><div class="training-tags">'+g.leaves.filter(t=>(scope.counts[t.id]||c.selected.has(t.id))).map(t=>'<label class="check '+(c.selected.has(t.id)?'on':'')+'"><input type="checkbox" data-act="ct" data-t="'+esc(t.id)+'" '+(c.selected.has(t.id)?'checked':'')+' '+(!scope.counts[t.id]?'disabled':'')+'><span>'+esc(t.label)+'</span><span class="n">'+(scope.counts[t.id]||0)+'</span></label>').join('')+(!usable.length?'<p class="dim">该范围暂未收录此题型。</p>':'')+'</div></section>';
+    }).join('')}</div>
+    <p class="training-classification-note">细分标签依据题面与解析识别；“未细分”题保留在对应题型中。</p>
+  </section>
+  <aside class="card card-pad training-preview" aria-label="本次组卷预览">
+    <div class="training-preview-heading"><h2>本次练习</h2><button class="btn btn-sm btn-ghost" data-act="ct-none" ${c.selected.size?'':'disabled'}>清空选择</button></div>
+    <label class="training-total">练习题量<input type="number" min="1" max="${Math.max(1,plan.max)}" value="${c.total}" data-act="ctotal" aria-label="专项练习题量"></label>
+    <div class="training-presets">${[10,20,30,50].map(n=>'<button class="btn btn-sm '+(c.total===n?'btn-primary':'')+'" data-act="ctotal-set" data-n="'+n+'">'+n+' 题</button>').join('')}</div>
+    <label class="check training-unseen ${c.preferUnseen?'on':''}"><input type="checkbox" data-act="c-unseen" ${c.preferUnseen?'checked':''}>优先抽未做题</label>
+    <p class="training-allocation-note">按所选年份、地区的真题收录比例分配，题库容量不足时补到其他已选考点。</p>
+    <div class="training-result-total"><strong>${plan.total}</strong><span>本次题目${selectedModules.size>1?' · '+selectedModules.size+' 个模块':''}</span></div>
+    ${plan.total<c.total&&c.selected.size?'<p class="training-shortage">所选范围最多可抽 '+plan.max+' 道不同题目。</p>':''}
+    <div class="training-allocation">${selectedGroups.map(g=>'<section><div class="training-allocation-title"><b>'+esc(g.label)+'</b><b>'+g.leaves.reduce((n,t)=>n+(plan.allocations[t.id]||0),0)+' 题</b></div>'+g.leaves.filter(t=>c.selected.has(t.id)).map(t=>'<div class="training-allocation-row"><span>'+esc(t.label)+'</span><span>'+(plan.allocations[t.id]||0)+' 题</span></div>').join('')+'</section>').join('')||'<p class="dim">选择左侧考点，可跨题型、跨模块组合。</p>'}</div>
+    <button class="btn btn-lg btn-primary training-start" data-act="start-custom" ${plan.total?'':'disabled'}>开始 ${plan.total||''}${plan.total?' 题':''}练习</button>
+    <p class="training-footer-note">同次练习不重复抽题，资料题保留完整材料。回忆版比例不代表考试固定配额。</p>
+  </aside></div>`;
+}
 /* ---------------------------------------------------------- 视图：答题 */
 
 /** 答题中：不做任何对错提示，交卷后才复盘 */
@@ -989,7 +976,7 @@ function renderQuestion(q, ref, a) {
 
   return `
   <div class="qmeta">
-    <span class="chip acc">${esc(ref.type || '未分类')}</span>
+    <span class="chip acc">${esc(refTypeLabel(ref))}</span>
     <span class="chip" title="源题库按模块重新编号">模块第 ${ref.no} 题</span>
     ${isMulti ? '<span class="chip warn">多选</span>' : ''}
     ${q.judge ? '<span class="chip">判断</span>' : ''}
@@ -1026,7 +1013,7 @@ function figureButton(q) {
 
 async function viewQuiz() {
   const sess = S.session;
-  if (!sess) return `${topbar('')}${emptyBox(ExamTools.icon('file'), '没有进行中的练习', '去「套卷刷题」或「随机刷题」开始一次吧')}`;
+  if (!sess) return `${topbar('')}${emptyBox(ExamTools.icon('file'), '没有进行中的练习', '去「真题套卷」或「专项训练」开始一次吧')}`;
   if (sess.submitted) { go('#/report/' + sess.id); return ''; }
 
   const qs = await ensureQuestions(sess.refs);
@@ -1123,7 +1110,7 @@ async function viewReport(sid, opts = {}) {
       <td class="num muted">${avgSec(t.ms, t.ans)}</td></tr>`).join('')}</tbody>
     <tfoot><tr><td>合计</td><td class="num">${sum.right} / ${sum.answered}</td>
       <td class="num">${sum.unanswered}</td><td class="num">${pct(sum.right, sum.answered)}</td>
-      <td class="num">${avgSec(sum.totalMs, sum.answered)}</td></tr></tfoot>
+      <td class="num">${avgSec(sum.answeredMs, sum.answered)}</td></tr></tfoot>
   </table>`;
 
   const rowHtml = (r) => {
@@ -1141,7 +1128,7 @@ async function viewReport(sid, opts = {}) {
       </summary>
       <div class="detail" data-review-qid="${esc(r.ref.qid)}">
         <div class="row tiny muted" style="margin-bottom:10px">
-          <span class="chip acc">${esc(r.ref.type || '未分类')}</span>
+          <span class="chip acc">${esc(refTypeLabel(r.ref))}</span>
           <div class="right">${favoriteButton(q, r.ref)}</div>
         </div>
         ${q && q.material ? `<div class="mat" style="margin-bottom:12px"><div class="mat-h">材料</div><div data-mark-zone="material">${q.material}</div></div>` : ''}
@@ -1158,7 +1145,7 @@ async function viewReport(sid, opts = {}) {
         </div>
         ${a.note ? `<div class="review-note"><b>我的草稿 / 思路</b><p>${esc(a.note)}</p></div>` : ''}
         ${reviewControls(sess, r.ref, a)}
-        ${q && q.explanation ? `<details class="expl-toggle" ${V.showAllExpl ? 'open' : ''}><summary>查看官方解析</summary>
+        ${q && q.explanation ? `<details class="expl-toggle" ${V.showAllExpl ? 'open' : ''}><summary>查看参考解析</summary>
           <div class="expl">${q.explanation}</div></details>` : ''}
       </div>
     </details>`;
@@ -1168,7 +1155,7 @@ async function viewReport(sid, opts = {}) {
   const groupHtml = () => {
     const groups = new Map();
     for (const r of rows) {
-      const t = r.ref.type || '未分类';
+      const t = refTypeLabel(r.ref);
       if (!groups.has(t)) groups.set(t, []);
       groups.get(t).push(r);
     }
@@ -1218,7 +1205,7 @@ async function viewReport(sid, opts = {}) {
     <div class="result-breakdown"><div class="result-counts"><div><b>${sum.right}</b><span>正确</span></div><div class="error-count"><b>${sum.wrong}</b><span>错误</span></div><div><b>${sum.unanswered}</b><span>未答</span></div></div>
       <div class="result-bar" aria-label="正确 ${sum.right}，错误 ${sum.wrong}，未答 ${sum.unanswered}"><i class="right-part" style="width:${sum.right / (sum.total || 1) * 100}%"></i><i class="wrong-part" style="width:${sum.wrong / (sum.total || 1) * 100}%"></i></div>
     </div>
-    <div class="result-time"><div><span>总用时</span><b>${fmtDur(sum.totalMs)}</b></div><div><span>平均每题</span><b>${avgSec(sum.totalMs, sum.answered)}</b></div></div>
+    <div class="result-time"><div><span>总用时</span><b>${fmtDur(sum.totalMs)}</b></div><div><span>已答题平均</span><b>${avgSec(sum.answeredMs, sum.answered)}</b></div></div>
   </section>
 
   <div class="card">
@@ -1365,7 +1352,7 @@ async function viewWrong() {
           return `<div class="opt locked ${isAns ? 'correct' : ''}"><div class="k">${o.k}</div><div class="t">${o.t}</div></div>`;
         }).join('')}</div>
         <div class="verdict ok" style="margin-top:12px">正确答案：<b>${q.answer}</b></div>
-        ${q.explanation ? `<details class="expl-toggle"><summary>查看官方解析</summary><div class="expl">${q.explanation}</div></details>` : ''}
+        ${q.explanation ? `<details class="expl-toggle"><summary>查看参考解析</summary><div class="expl">${q.explanation}</div></details>` : ''}
       </div>
     </details>`;
   }).join('');
@@ -1636,59 +1623,50 @@ const ACT = {
   /* 随机刷题设置 */
   ct(e, el) {
     const t = el.dataset.t;
-    if (V.custom.types.has(t)) V.custom.types.delete(t); else V.custom.types.add(t);
-    render();
+    if (V.custom.selected.has(t)) V.custom.selected.delete(t); else V.custom.selected.add(t);
+    saveCustom(); render();
   },
-  'ct-all'() { CAT.typeOrder.forEach((t) => V.custom.types.add(t)); render(); },
-  'ct-none'() { V.custom.types.clear(); render(); },
+  'ct-none'() { V.custom.selected.clear(); saveCustom(); render(); },
+  'cm-view'(e,el) { V.custom.activeModule=el.dataset.m; saveCustom(); render(); },
+  'ct-group'(e,el) {
+    const group=TRAINING_INDEX.groups.find(g=>g.id===el.dataset.t);
+    const available=TrainingTools.scope(TRAINING_INDEX,CAT,trainingOptions()).counts;
+    const leaves=group.leaves.filter(t=>available[t.id]);
+    const all=leaves.every(t=>V.custom.selected.has(t.id));
+    leaves.forEach(t=>all?V.custom.selected.delete(t.id):V.custom.selected.add(t.id));
+    saveCustom();render();
+  },
   'ct-module'(e, el) {
-    V.custom.types.clear();
-    CAT.typeOrder.filter((t) => moduleOfType(t) === el.dataset.m).forEach((t) => V.custom.types.add(t));
-    render();
+    const available=TrainingTools.scope(TRAINING_INDEX,CAT,trainingOptions()).counts;
+    TRAINING_INDEX.groups.filter(g=>g.module===el.dataset.m).flatMap(g=>g.leaves).filter(t=>available[t.id]).forEach(t=>V.custom.selected.add(t.id));
+    saveCustom();render();
   },
-  ctotal(e, el) { V.custom.total = Math.max(1, +el.value || 1); render(); },
-  'ctotal-set'(e, el) { V.custom.total = +el.dataset.n; render(); },
+  'ct-module-clear'(e,el) { TRAINING_INDEX.groups.filter(g=>g.module===el.dataset.m).flatMap(g=>g.leaves).forEach(t=>V.custom.selected.delete(t.id));saveCustom();render(); },
+  'c-unseen'(e,el) {V.custom.preferUnseen=el.checked;saveCustom();render();},
+  cr(e,el) {V.custom.region=el.value;saveCustom();render();},
+  ctotal(e, el) { V.custom.total = Math.max(1, Math.min(1000,Math.floor(+el.value || 1))); saveCustom();render(); },
+  'ctotal-set'(e, el) { V.custom.total = +el.dataset.n; saveCustom();render(); },
   cy(e, el) {
     const y = el.dataset.y;
     if (V.custom.years.has(y)) V.custom.years.delete(y); else V.custom.years.add(y);
-    render();
+    saveCustom();render();
   },
-  async 'start-custom'() {    const types = CAT.typeOrder.filter((t) => V.custom.types.has(t));
-    if (!types.length) return toast('请先选择题型');
+  async 'start-custom'() {
+    if(!V.custom.selected.size)return toast('请先选择考点');
     toast('正在抽取题目…');
-    const pools = await loadPools(types);
-    const years = V.custom.years;
-    const avail = {};
-    const filtered = {};
-    for (const p of pools) {
-      const keep = p.questions.filter((q) => {
-        const sourceYears = q.sourceYears || [yearOfPid(q.pid)];
-        return !years.size || sourceYears.some(y => y != null && years.has(String(y)));
-      });
-      filtered[p.type] = keep;
-      avail[p.type] = keep.length;
-      for (const q of keep) QMAP.set(q.qid, q);
-      loadedKeys.add('q:' + POOL_INDEX[p.type].key);
-    }
-    const total = Math.min(V.custom.total, Object.values(avail).reduce((a, b) => a + b, 0));
-    if (!total) return toast('所选年份范围内没有题目');
-    const alloc = allocate(types, avail, total);
-    const seed = (Date.now() & 0x7fffffff) || 1;
-    const refs = [];
-    types.forEach((t, i) => {
-      const n = alloc[i];
-      if (!n) return;
-      const picked = shuffle(filtered[t], seed + i * 7919).slice(0, n);
-      const key = POOL_INDEX[t].key;
-      for (const q of picked) refs.push(makeRef(q, 'q', key));
-    });
-    // 打散，避免同题型连在一起
-    const finalRefs = shuffle(refs, seed ^ 0x5bf03635);
-    const title = `${types.length === 1 ? types[0] : types.length + ' 类题型'} · 随机 ${finalRefs.length} 题`;
+    const options=trainingOptions(),seen=new Set(getSessions().flatMap(s=>s.refs.map(r=>r.qid)));
+    const sampled=TrainingTools.sample(TRAINING_INDEX,CAT,options,Date.now(),seen);
+    if(!sampled.total)return toast('所选年份、地区暂未收录这些考点');
+    const questions=await ensureQuestions(sampled.refs);
+    if(questions.length!==sampled.refs.length)throw new Error('题目加载不完整，请联网后重试');
+    const selectedGroups=TRAINING_INDEX.groups.filter(g=>g.leaves.some(t=>V.custom.selected.has(t.id)));
+    const label=V.custom.selected.size===1?sampled.refs[0].specialty:selectedGroups.length===1?selectedGroups[0].label:[...new Set(selectedGroups.map(g=>g.module))].join('、');
+    const title=`${options.region||'全国真题'} · ${label} · ${sampled.total} 题`;
     startSession({
       id: newId(), kind: 'custom', title, paperId: null,
       createdAt: Date.now(), submittedAt: null,
-      refs: finalRefs, answers: {}, index: 0, submitted: false,
+      refs: sampled.refs, answers: {}, index: 0, submitted: false,
+      training: {region:options.region,years:options.years,selected:options.selected,papers:sampled.papers.length,allocations:sampled.allocations,basis:'按所选回忆版真题的考点出现次数分配；容量不足时在所选考点内补足'},
     });
   },
 
@@ -1760,7 +1738,7 @@ const ACT = {
     const unanswered = sess.refs.filter((r) => !(sess.answers[r.qid]?.pick)).length;
     MODAL = modal('确认交卷',
       `<p>共 ${sess.refs.length} 题，已作答 <b>${sess.refs.length - unanswered}</b> 题${unanswered ? `，还有 <b style="color:var(--warn)">${unanswered}</b> 题未作答` : ''}。</p>
-       <p class="small muted">交卷后将生成本次成绩报告，答案与官方解析会在报告里统一显示，错题自动收进错题本。</p>`,
+       <p class="small muted">交卷后生成成绩报告，显示参考答案与解析，错题自动收进错题本。</p>`,
       `<button class="btn btn-ghost" data-act="close-modal">再检查一下</button>
        <button class="btn btn-primary" data-act="do-submit">确认交卷</button>`);
     render();
@@ -1914,8 +1892,10 @@ const ACT = {
     }
     const weak = [...agg.entries()].filter(([, v]) => v.ans >= 3).sort((a, b) => a[1].ok / a[1].ans - b[1].ok / b[1].ans).slice(0, 4).map(([t]) => t);
     if (!weak.length) return toast('还没有足够的作答记录');
-    V.custom.types = new Set(weak);
+    V.custom.selected = new Set(TRAINING_INDEX.groups.filter(g=>weak.includes(g.id)).flatMap(g=>g.leaves.map(t=>t.id)));
+    V.custom.activeModule=moduleOfType(weak[0]);
     V.custom.total = 30;
+    saveCustom();
     go('#/custom');
     toast('已为你选好薄弱题型：' + weak.join('、'));
   },
@@ -1963,7 +1943,7 @@ const ACT = {
         const review = assessment(latest || {}, !!latest?.pick && latest.pick === q.answer);
         lines.push(`**最近一次自评**：${review.familiarity}；${review.confidence}；${review.interpretation}`, '');
         lines.push(`**收藏**：${isFavorite(q) ? '是' : '否'}`, '');
-        if (SETTINGS.exportExpl && q.explanation) lines.push('**官方解析**', '', htmlToMd(q.explanation, '> '), '');
+        if (SETTINGS.exportExpl && q.explanation) lines.push('**参考解析**', '', htmlToMd(q.explanation, '> '), '');
         lines.push('---', '');
       });
     }
@@ -2116,11 +2096,13 @@ function reportDocuments(sessions, opts) {
     return {title:sess.title,report:true,date:fmtTime(sess.submittedAt||sess.createdAt),
       summary:[`整次练习：${sum.total} 题　已答 ${sum.answered}　正确 ${sum.right}　错误 ${sum.wrong}　未答 ${sum.unanswered}`,
         `正确率：${pct(sum.right,sum.answered)}　总用时：${fmtDur(sum.totalMs)}`,
+        ...(sess.training?[`专项范围：${sess.training.region||'全部地区'}；${sess.training.years.join('、')||'不限年份'}；参考 ${sess.training.papers} 份真题`]:[]),
         '自评与复盘描述为考生自述，请结合题目与解析分析，不能仅凭答对判断掌握。'],
       questions:exportRows(sess,qs,opts.scope).map(r=>{
         const q=r.q;if(!q)throw new Error('题目未加载：'+r.ref.qid);
         const a=r.a,review=assessment(a,r.correct);
-        return {...printableQuestion(q,r.ref.type),material:opts.material?q.material||'':'',
+        return {...printableQuestion(q,r.ref.module || r.ref.type),specialty:r.ref.specialty||'',
+          source:q.from?.file?`${q.from.file} · 模块第 ${r.ref.no} 题`:'',material:opts.material?q.material||'':'',
           result:{state:!a.pick?'未作答':r.correct?'答对':'答错',mine:a.pick||'未作答',answer:q.answer,time:fmtDur(a.ms),
             ...review,note:a.note||'',reflection:a.reflection||'',excluded:a.excluded||'',
             favorite:isFavorite(q),flagged:!!a.flagged,explanation:opts.expl?q.explanation||'':''}};
@@ -2206,7 +2188,7 @@ function runAction(fn, e, el) {
 }
 
 /* 下拉框 / 复选框 / 单选 / 数字输入 */
-const CHANGE_ACTS = new Set(['pf-sel', 'cy', 'ct', 'set', 'hsel', 'ctotal', 'psel-type', 'psel-module', 'showall-expl', 'auto-pause']);
+const CHANGE_ACTS = new Set(['pf-sel', 'cy', 'ct', 'cr', 'c-unseen', 'set', 'hsel', 'ctotal', 'psel-type', 'psel-module', 'showall-expl', 'auto-pause']);
 document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el || !CHANGE_ACTS.has(el.dataset.act)) return;
@@ -2303,9 +2285,8 @@ window.CloudSync?.bind({
 if (!CAT) {
   app.innerHTML = emptyBox(ExamTools.icon('file'), '数据未加载', '请先运行 node tools/build.mjs 生成 data/ 目录');
 } else {
-  // 默认选中言语理解三个题型，减少点选成本
-  CAT.typeOrder.filter((t) => moduleOfType(t) === '言语理解与表达').forEach((t) => V.custom.types.add(t));
-  V.custom.total = 30;
+  // Reopening preserves the user's scope and selected tags.
+  if(!SETTINGS.training&&TRAINING_INDEX)TRAINING_INDEX.groups.filter(g=>g.module===V.custom.activeModule).flatMap(g=>g.leaves).forEach(t=>V.custom.selected.add(t.id));
   const oldSessions = getSessions();
   if (oldSessions.some(s => s.meta?.rows)) setSessions(oldSessions);
   S.session = store.get(K.active, null);
