@@ -490,7 +490,7 @@ function buildMarkdown(sessions, opts = {}) {
     if (!rows.length) out.push('_（无）_');
     rows.forEach((r, i) => {
       const q = r.q;
-      out.push(`### ${i + 1}. ${r.ref.type || '未分类'} · 第 ${r.ref.no} 题　\`qid ${r.ref.qid}\``);
+      out.push(`### ${i + 1}. ${r.ref.type || '未分类'} · 模块第 ${r.ref.no} 题　\`qid ${r.ref.qid}\``);
       out.push('');
       if (q && material && q.material) {
         out.push('**材料**');
@@ -717,7 +717,7 @@ function viewHome() {
     <section class="recent-section"><div class="section-heading"><h2>最近练习</h2><a href="#/history">全部记录</a></div>
       ${sessions.length ? `<div class="recent-list">${sessions.slice(0,4).map(s => `<a class="recent-row" href="#/report/${s.id}"><div><b title="${esc(s.title)}">${esc(displayTitle(s.title))}</b><span>${fmtTime(s.submittedAt || s.createdAt)} · ${s.meta?.total ?? s.refs.length} 题</span></div><strong>${pct(s.meta?.right,s.meta?.answered)}</strong><span class="recent-duration">${fmtDur(s.meta?.totalMs)}</span></a>`).join('')}</div>` : '<div class="recent-empty">完成一次练习后，成绩会保存在这里。</div>'}
     </section>
-    <footer class="workspace-footer">政治理论 · 言语理解与表达 · 判断推理<span>${CAT.totalQuestions.toLocaleString()} 道真题</span></footer>
+    <footer class="workspace-footer"><span>${CAT.modules.map(esc).join(' · ')}</span><span>${CAT.totalQuestions.toLocaleString()} 道真题</span></footer>
     ${!storageOK ? '<div class="card card-pad">本地存储不可用，刷新会丢失记录。请用「启动.cmd」打开。</div>' : ''}
   </main>`;
 }
@@ -726,6 +726,7 @@ function viewHome() {
 
 /** 一套卷里每个模块各有多少题 */
 function moduleCounts(paper) {
+  if (paper.moduleCounts) return new Map(Object.entries(paper.moduleCounts));
   const out = new Map();
   for (const [t, n] of Object.entries(paper.types)) {
     const m = moduleOfType(t) || '其他';
@@ -772,7 +773,8 @@ function viewPapers() {
       <div class="meta">
         <span class="chip acc">${p.year}</span>
         ${p.region ? `<span class="chip">${esc(p.region)}</span>` : ''}
-        <span class="chip">${p.count} 题</span>
+        <span class="chip">收录 ${p.count} 题</span>
+        ${p.coverage?.missingCount ? `<span class="chip">原库尚缺 ${p.coverage.missingCount} 题</span>` : ''}
       </div>
       <div class="modstart">
         ${mods.map((x) => `<button class="btn btn-sm" data-act="start-paper-module" data-id="${p.id}" data-m="${esc(x.m)}" title="只做本卷的${esc(x.m)}">${esc(x.m)} <b>${x.n}</b></button>`).join('')}
@@ -858,8 +860,11 @@ async function viewPaper(pid) {
     <div class="row" style="margin-top:12px">
       <span class="chip acc">${pf.year}</span>
       ${pf.region ? `<span class="chip">${esc(pf.region)}</span>` : ''}
-      <span class="chip">全卷 ${pf.count} 题</span>
+      <span class="chip">收录 ${pf.count}${pf.coverage?.expectedCount ? ` / ${pf.coverage.expectedCount}` : ''} 题</span>
     </div>
+    <p class="muted" style="margin:12px 0 0">${pf.coverage?.missingCount
+      ? `原始回忆版题库尚缺 ${pf.coverage.missingCount} 题，本站已导入原库中本卷的全部现有题目。`
+      : '已导入原库中本卷的全部现有题目。网友回忆版可能有遗漏。'}</p>
   </div>
 
   <div class="card">
@@ -874,7 +879,7 @@ async function viewPaper(pid) {
 
   <div class="card card-pad startbar">
     <div>
-      <div style="font-weight:600">已选 <span class="bigcount">${chosenCount}</span> 题${chosenCount !== pf.count ? `<span class="muted small">（全卷 ${pf.count} 题）</span>` : ''}</div>
+      <div style="font-weight:600">已选 <span class="bigcount">${chosenCount}</span> 题${chosenCount !== pf.count ? `<span class="muted small">（本卷收录 ${pf.count} 题）</span>` : ''}</div>
     </div>
     <div class="right row">
       ${mods.map(({ m }) => `<button class="btn btn-sm" data-act="psel-module-only" data-id="${pid}" data-m="${esc(m)}">只做${esc(m)}</button>`).join('')}
@@ -929,9 +934,7 @@ function viewCustom() {
       <div class="row" style="margin-top:10px">
         <button class="btn btn-sm btn-ghost" data-act="ct-all">全选</button>
         <button class="btn btn-sm btn-ghost" data-act="ct-none">清空</button>
-        <button class="btn btn-sm btn-ghost" data-act="ct-module" data-m="言语理解与表达">只选言语</button>
-        <button class="btn btn-sm btn-ghost" data-act="ct-module" data-m="判断推理">只选判断</button>
-        <button class="btn btn-sm btn-ghost" data-act="ct-module" data-m="政治理论">只选政治理论</button>
+        ${CAT.modules.map(m => `<button class="btn btn-sm btn-ghost" data-act="ct-module" data-m="${esc(m)}">只选${esc(m)}</button>`).join('')}
       </div>
     </div>
   </div>
@@ -987,7 +990,7 @@ function renderQuestion(q, ref, a) {
   return `
   <div class="qmeta">
     <span class="chip acc">${esc(ref.type || '未分类')}</span>
-    <span class="chip" title="${esc(ref.module || '')}">原卷第 ${ref.no} 题</span>
+    <span class="chip" title="源题库按模块重新编号">模块第 ${ref.no} 题</span>
     ${isMulti ? '<span class="chip warn">多选</span>' : ''}
     ${q.judge ? '<span class="chip">判断</span>' : ''}
     <div class="right row"><button class="btn btn-sm ${a.flagged ? 'btn-primary' : ''}" data-act="flag" aria-pressed="${!!a.flagged}">${a.flagged ? '已标记' : '标记'}</button>${favoriteButton(q, ref)}</div>
@@ -1003,7 +1006,7 @@ function renderAnswerSheet(sess) {
   return sess.refs.map((r, idx) => {
     const a = sess.answers[r.qid] || {};
     const cls = [a.pick ? 'done' : '', idx === sess.index ? 'cur' : '', a.flagged ? 'flagged' : ''].filter(Boolean).join(' ');
-    return `<button class="${cls}" data-act="jump" data-i="${idx}" ${idx === sess.index ? 'aria-current="step"' : ''} aria-label="练习第 ${idx + 1} 题，${a.pick ? '已答' : '未答'}${a.flagged ? '，待复查' : ''}" title="${esc(r.type)} · 原卷第 ${r.no} 题">${idx + 1}</button>`;
+    return `<button class="${cls}" data-act="jump" data-i="${idx}" ${idx === sess.index ? 'aria-current="step"' : ''} aria-label="练习第 ${idx + 1} 题，${a.pick ? '已答' : '未答'}${a.flagged ? '，待复查' : ''}" title="${esc(r.type)} · 模块第 ${r.no} 题">${idx + 1}</button>`;
   }).join('');
 }
 
@@ -1130,7 +1133,7 @@ async function viewReport(sid, opts = {}) {
     return `<details class="qitem review-item">
       <summary class="review-summary">
         <span class="review-heading">
-          <span class="review-identity"><b class="review-number" title="原卷题号">第 ${r.ref.no} 题</b><span class="review-time">用时 <b>${fmtDur(a.ms)}</b></span></span>
+          <span class="review-identity"><b class="review-number" title="源题库模块内题号">模块第 ${r.ref.no} 题</b><span class="review-time">用时 <b>${fmtDur(a.ms)}</b></span></span>
           <span class="review-result">${stateChip}</span>
           <span class="review-toggle"><span class="when-closed">展开</span><span class="when-open">收起</span></span>
         </span>
@@ -1412,7 +1415,7 @@ async function viewFavorites() {
     <div class="favorite-filters row">${['',...types].map(t => `<button class="btn btn-sm ${filter === t ? 'btn-primary' : ''}" data-act="favorite-filter" data-type="${esc(t)}">${t || '全部'}</button>`).join('')}</div></div>
     <div class="card">${items.length ? items.map(v => {
       const q=QMAP.get(v.ref.qid); if(!q)return '';
-      return `<details class="qitem"><summary><span class="chip">${esc(v.ref.type)}</span><span class="qt">${esc(questionExcerpt(q))}</span></summary><div class="detail"><div class="row"><span class="muted">原卷第 ${v.ref.no} 题</span><div class="right">${favoriteButton(q,v.ref)}</div></div>${q.material ? `<div class="mat">${q.material}</div>` : ''}<div class="stem">${ExamFormat.stem(q.stem,q.type)}</div>${figureButton(q)}<div class="opts">${q.options.map(o=>`<div class="opt locked"><div class="k">${o.k}</div><div class="t">${o.t}</div></div>`).join('')}</div><details class="expl-toggle"><summary>查看答案与解析</summary><b>答案：${q.answer}</b><div class="expl">${q.explanation || ''}</div></details></div></details>`;
+      return `<details class="qitem"><summary><span class="chip">${esc(v.ref.type)}</span><span class="qt">${esc(questionExcerpt(q))}</span></summary><div class="detail"><div class="row"><span class="muted">模块第 ${v.ref.no} 题</span><div class="right">${favoriteButton(q,v.ref)}</div></div>${q.material ? `<div class="mat">${q.material}</div>` : ''}<div class="stem">${ExamFormat.stem(q.stem,q.type)}</div>${figureButton(q)}<div class="opts">${q.options.map(o=>`<div class="opt locked"><div class="k">${o.k}</div><div class="t">${o.t}</div></div>`).join('')}</div><details class="expl-toggle"><summary>查看答案与解析</summary><b>答案：${q.answer}</b><div class="expl">${q.explanation || ''}</div></details></div></details>`;
     }).join('') : emptyBox('', '还没有收藏题', '答题或复盘时点击「收藏」，这里就能找到。')}</div>`;
 }
 
@@ -1619,7 +1622,7 @@ const ACT = {
       if (n) parts.push(`${m} ${n} 题`);
     }
     const onlyOneModule = mods.length === 1;
-    const title = onlyOneModule
+    const title = refs.length === pf.count ? `${pf.name} · ${refs.length} 题` : onlyOneModule
       ? `${pf.name} · 仅${parts[0]}`
       : `${pf.name} · ${refs.length} 题（${parts.map((p) => p.split(' ')[0]).join('+')}）`;
 

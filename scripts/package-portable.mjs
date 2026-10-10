@@ -114,7 +114,8 @@ await fs.writeFile(path.join(folder, '使用说明.txt'), `两眼一睁就是练
 
 题库范围
 ${catalog.yearRange[0]}—${catalog.yearRange[1]} 年，${paperCount} 套试卷、${questionCount.toLocaleString('zh-CN')} 道题。
-政治理论、言语理解与表达、判断推理，以本网站当前题库为准。
+${catalog.modules.join('、')}，已导入原库中各卷的全部现有题目。
+网友回忆版可能有遗漏，页面“收录”题量不代表真实试卷一定完整。
 
 已有功能
 真题套卷、专项训练、实时计时、暂停、手写标注、选项排除、错题本、收藏、
