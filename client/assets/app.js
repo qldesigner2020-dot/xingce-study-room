@@ -703,7 +703,7 @@ function viewHome() {
   const right = sessions.reduce((n,s) => n + (s.meta?.right || 0), 0);
   return `${topbar('home')}
   <main class="home-workspace">
-    <header class="home-heading"><div><h1>开始练习</h1><p>真题、专项与复盘，在这里完成。</p></div>
+    <header class="home-heading"><div class="home-intro"><h1 class="home-title"><img src="assets/home-title.svg" alt="两眼一睁就是练" width="1723" height="352"></h1><p>真题、专项与复盘，在这里完成。</p></div>
       <div class="learning-summary"><div><b>${sessions.length}</b><span>完成练习</span></div><div><b>${answered ? pct(right,answered) : '—'}</b><span>累计正确率</span></div></div>
     </header>
     ${active && !active.submitted ? `<section class="resume-strip"><div><b>继续上次练习</b><p title="${esc(active.title)}">${esc(displayTitle(active.title))} · 第 ${active.index + 1} / ${active.refs.length} 题</p></div><div class="row"><button class="btn btn-ghost" data-act="discard-active">放弃</button><button class="btn btn-primary" data-act="resume">继续作答</button></div></section>` : ''}

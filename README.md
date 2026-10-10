@@ -20,6 +20,12 @@ npm run build
 
 `client/` 是静态应用源码；`src/backend.js` 是登录与 Supabase 适配器；`client/assets/cloud-sync.js` 是记录同步逻辑。原来的本地离线版独立保留。
 
+## 离线分享包
+
+运行 `npm run package:portable`，在忽略的 `releases/` 目录生成 ZIP。解压整个文件夹后，双击「开始刷题.html」即可使用，无需安装、登录或联网。包括当前网站全部试题、图片、手写、收藏、自评、备份和带图 PDF / Markdown 导出。
+
+打包仅复制公开静态源码，不包含云端配置、账号、个人练习历史或备份；移除登录入口和旧中文字体下载包，额外生成本地图片字节脚本供文件模式导出使用。记录保存在各自浏览器；换电脑或更新版本时通过「练习记录 → 导出完整备份 / 导入完整备份」迁移。
+
 ## 配置与发布
 
 1. 在新的 Supabase 项目 SQL Editor 执行 `supabase/schema.sql`。
