@@ -11,7 +11,7 @@ function localIdentity() {
   try {
     const ref=new URL(config.url).hostname.split('.')[0];
     const session=JSON.parse(localStorage.getItem('sb-'+ref+'-auth-token'));
-    const journal=JSON.parse(localStorage.getItem('qb.cloud.journal.v1'));
+    const journal=JSON.parse(localStorage.getItem('qb.cloud.identity.v2')||localStorage.getItem('qb.cloud.journal.v1'));
     return session?.user?.id&&session.refresh_token&&journal?.userId===session.user.id?session.user:null;
   } catch {return null;}
 }
@@ -100,6 +100,7 @@ async function start() {
   if(guest){readyResolve({guest:true});return;}
   renderForm();
 }
+let syncWatermark=0,syncOwner=null;
 window.CloudBackend={ready,isGuest:()=>guest,email:async()=>localIdentity()?.email||(await client?.auth.getSession())?.data.session?.user.email||'',
   signIn(){clearGuest();location.reload();},
   async signOut(){if(!navigator.onLine)throw new Error('请联网完成同步后退出登录');const {error}=await makeClient().auth.signOut();if(error)throw error;clearGuest();},
@@ -110,10 +111,17 @@ window.CloudBackend={ready,isGuest:()=>guest,email:async()=>localIdentity()?.ema
     const {data:session,error:authError}=await client.auth.getSession();
     if(authError&&/fetch|network|abort|timeout|retry/i.test(authError.message||''))throw new TypeError('Network unavailable');
     if(authError||!session.session)throw new Error('请重新登录');
-    const {data,error}=await client.rpc('study_sync',{p_changes:method==='POST'?changes:[]}).abortSignal(AbortSignal.timeout(20000));
-    if(error){if(error.code==='PGRST301')throw new Error('请重新登录');throw new Error(humanError(error));}
-    if(!data||!Array.isArray(data.records)||data.userId!==session.session.user.id)throw new Error('同步返回异常，当前记录已保留');
-    return data;
+    const userId=session.session.user.id;
+    if(syncOwner!==userId){syncOwner=userId;syncWatermark=0;}
+    let after='',until=null;const records=[];let result;
+    do {
+      const {data,error}=await client.rpc('study_sync_page',{p_changes:method==='POST'?changes:[],p_after:after,p_limit:25,p_since:method==='POST'?0:syncWatermark,p_until:until}).abortSignal(AbortSignal.timeout(20000));
+      if(error){if(error.code==='PGRST301')throw new Error('请重新登录');throw new Error(humanError(error));}
+      if(!data||!Array.isArray(data.records)||data.userId!==userId)throw new Error('同步返回异常，当前记录已保留');
+      result=data;records.push(...data.records);until=data.until;after=method==='POST'?null:data.next;
+    }while(after);
+    if(method!=='POST')syncWatermark=until;
+    return {...result,records};
   }
 };
 window.addEventListener('online',()=>{if(!guest)makeClient();});

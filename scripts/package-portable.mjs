@@ -43,7 +43,7 @@ for (const file of sourceFiles) {
 const index = (await fs.readFile(path.join(client, 'index.html'), 'utf8'))
   .replace('<link rel="stylesheet" href="assets/auth.css">\n', '')
   .replace('<link rel="stylesheet" href="assets/auth.css">\r\n', '')
-  .replace('<script src="assets/cloud-sync.js"></script>', '<script src="assets/app.js"></script>');
+  .replace('<script src="assets/cloud-sync.js"></script>', '<script src="assets/app-boot.js"></script>');
 await fs.writeFile(path.join(folder, '开始刷题.html'), index);
 await fs.writeFile(path.join(folder, '启动.cmd'), '@echo off\r\nchcp 65001 >nul\r\nstart "" "%~dp0开始刷题.html"\r\n', 'utf8');
 const appPath = path.join(folder, 'assets/app.js');

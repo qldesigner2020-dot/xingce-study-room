@@ -3,6 +3,7 @@
    纯前端、无依赖；数据用 <script> 动态注入，因此 file:// 双击即可用。
    ============================================================ */
 'use strict';
+const durableStorage=window.StudyStorage||localStorage;
 
 const CAT = window.QB_CATALOG;
 const POOL_INDEX = window.QB_POOL_INDEX || {};
@@ -150,8 +151,8 @@ const K = {
 let memoryStore = null;
 let storageOK = true;
 try {
-  localStorage.setItem('qb.__probe', '1');
-  localStorage.removeItem('qb.__probe');
+  durableStorage.setItem('qb.__probe', '1');
+  durableStorage.removeItem('qb.__probe');
 } catch {
   storageOK = false;
   memoryStore = {};
@@ -160,24 +161,24 @@ try {
 const store = {
   get(k, dflt) {
     try {
-      const raw = storageOK ? localStorage.getItem(k) : memoryStore[k];
+      const raw = storageOK ? durableStorage.getItem(k) : memoryStore[k];
       return raw ? JSON.parse(raw) : dflt;
     } catch { return dflt; }
   },
   set(k, v) {
     const raw = JSON.stringify(v);
     try {
-      if (storageOK) localStorage.setItem(k, raw);
+      if (storageOK) durableStorage.setItem(k, raw);
       else memoryStore[k] = raw;
       window.CloudSync?.changed(k, v);
       return true;
     } catch (e) {
-      toast('保存失败：本地存储已满，请在「记录」页删除一些旧记录', 4000);
+      toast('保存失败：请保持页面打开并导出完整备份，然后重试', 4000);
       return false;
     }
   },
   del(k) {
-    if (storageOK) localStorage.removeItem(k);
+    if (storageOK) durableStorage.removeItem(k);
     else delete memoryStore[k];
     window.CloudSync?.changed(k, null);
   },
@@ -187,14 +188,14 @@ const DEFAULT_SETTINGS = { theme: 'auto', exportExpl: true, exportMat: true, exp
 let SETTINGS = { ...DEFAULT_SETTINGS, ...store.get(K.settings, {}) };
 const saveSettings = () => store.set(K.settings, SETTINGS);
 
-const MAX_SESSIONS = 150;
 const getSessions = () => store.get(K.sessions, []);
 function setSessions(list) {
-  const compact = list.slice(0, MAX_SESSIONS).map((session) => {
+  const compact = list.map((session) => {
     const { __questions, ...saved } = session;
     if (saved.meta) { const { rows, ...meta } = saved.meta; saved.meta = meta; }
     return saved;
   });
+  window.StudyReport?.invalidate();
   return store.set(K.sessions, compact);
 }
 const getWrong = () => store.get(K.wrong, {});
@@ -202,6 +203,14 @@ const setWrong = (w) => store.set(K.wrong, w);
 
 /* 收藏属于题目；复盘自评属于本次作答，两者不共用“待复查”标记。 */
 const getFavorites = () => store.get(K.favorites, {});
+function reportHost(){return {
+  sessions:getSessions,catalog:CAT,favorites:getFavorites,favoriteKey:questionKey,loadScript,
+  loadQuestion:async ref=>(await ensureQuestions([ref]))[0],htmlToMd,download,topbar,
+  showLoading:html=>{app.innerHTML=html;},
+  async updateAttempt(row,patch){const list=getSessions(),session=list.find(s=>s.id===row.session.id);if(!session)throw new Error('这次记录已被删除，请刷新报告');Object.assign(ansOf(session,row.ref.qid),patch);if(!setSessions(list))throw new Error('保存失败');await durableStorage.flush?.();},
+  async toggleFavorite(row){const favorites=getFavorites(),key=questionKey(row.q);if(favorites[key])delete favorites[key];else favorites[key]={createdAt:Date.now(),ref:row.ref};if(!store.set(K.favorites,favorites))throw new Error('收藏保存失败');await durableStorage.flush?.();}
+  ,practiceConcept(scope){const g=TRAINING_INDEX?.groups.find(g=>g.module===scope.module&&g.leaves.some(t=>t.label===scope.concept));const leaf=g?.leaves.find(t=>t.label===scope.concept);if(!leaf)return toast('这个考点尚未提供独立训练入口');Object.assign(V.custom,{workflow:'targeted',mode:'single',activeModule:g.module,activeGroup:g.id,selected:new Set([leaf.id]),selectedModules:[g.module],examType:scope.examType,examClass:scope.examClass,region:scope.region==='未知'?'':scope.region,years:new Set(scope.year?[String(scope.year)]:[]),groupFilters:{},total:20});saveCustom();go('#/custom');}
+};}
 function questionKey(q) {
   // Original crops have no HTML text and some OCR options are empty. Keep
   // their stable source IDs so unrelated image questions never share a favorite.
@@ -718,7 +727,7 @@ function parseHash() {
 /* ---------------------------------------------------------- 通用片段 */
 
 function topbar(active) {
-  const mobileLabels = {home:'首页',papers:'真题',custom:'专项',wrong:'错题',favorites:'收藏',history:'记录'};
+  const mobileLabels = {home:'首页',papers:'真题',custom:'专项',wrong:'错题',favorites:'收藏',history:'记录',insights:'报告'};
   const link = (href, label, key) =>
     `<a href="${href}" aria-label="${label}" ${active === key ? 'aria-current="page"' : ''} class="${active === key ? 'on' : ''}"><span class="nav-label-desktop">${label}</span><span class="nav-label-mobile">${mobileLabels[key]}</span></a>`;
   return `<div class="topbar">
@@ -733,6 +742,7 @@ function topbar(active) {
       ${link('#/wrong', '错题本', 'wrong')}
       ${link('#/favorites', '收藏题', 'favorites')}
       ${link('#/history', '练习记录', 'history')}
+      ${link('#/insights', '我的报告', 'insights')}
     </nav>
   </div>`;
 }
@@ -1342,6 +1352,8 @@ async function viewReport(sid, opts = {}) {
 
 function viewHistory() {
   const sessions = getSessions();
+  const historyPage=Math.max(1,Math.min(V.historyPage||1,Math.ceil(sessions.length/25)||1));
+  const pageSessions=sessions.slice((historyPage-1)*25,historyPage*25);
   if (!sessions.length) return `${topbar('history')}<div class="card card-pad row"><h1 style="font-size:19px">记录与导出</h1><div class="right row"><button class="btn btn-sm" data-act="backup">导出完整备份</button><button class="btn btn-sm" data-act="restore">导入完整备份</button></div></div>${emptyBox(ExamTools.icon('file'), '还没有做题记录', '完成一次练习后会出现在这里；未完成练习也可备份')}`;
 
   const agg = new Map();
@@ -1396,7 +1408,7 @@ function viewHistory() {
         <th style="width:34px"></th><th>时间</th><th>名称</th><th>类型</th>
         <th class="num">题量</th><th class="num">作答</th><th class="num">正确</th><th class="num">正确率</th><th class="num">用时</th><th></th>
       </tr></thead>
-      <tbody>${sessions.map((s) => {
+      <tbody>${pageSessions.map((s) => {
         const m = s.meta || {};
         return `<tr>
           <td><input type="checkbox" data-act="hsel" data-id="${s.id}" ${sel.has(s.id) ? 'checked' : ''} style="accent-color:var(--accent)"></td>
@@ -1412,13 +1424,13 @@ function viewHistory() {
         </tr>`;
       }).join('')}</tbody>
     </table>
-    <div class="mobile-history">${sessions.map(s => {
+    <div class="mobile-history">${pageSessions.map(s => {
       const m = s.meta || {};
       return `<article class="history-record"><div class="history-record-head"><label class="history-record-select"><input type="checkbox" data-act="hsel" data-id="${esc(s.id)}" ${sel.has(s.id) ? 'checked' : ''} aria-label="选择练习：${esc(displayTitle(s.title))}"></label><a href="#/report/${s.id}"><b>${esc(displayTitle(s.title))}</b><span>${fmtTime(s.submittedAt || s.createdAt)}</span></a></div><a class="history-record-stats" href="#/report/${s.id}"><div><b>${pct(m.right,m.graded ?? m.answered)}</b><span>正确率</span></div><div><b>${m.answered ?? 0}/${m.total ?? s.refs.length}</b><span>作答</span></div><div><b>${fmtDur(m.totalMs)}</b><span>用时</span></div></a></article>`;
     }).join('')}</div>
     <div class="card-pad row">
       <button class="btn btn-sm btn-ghost btn-danger" data-act="clear-sessions">清空全部记录</button>
-      <span class="small muted">最多保留 ${MAX_SESSIONS} 次；导出后即可安全删除。</span>
+      ${window.StudyStorage?.durable()?'<button class="btn btn-sm" data-act="migration-storage-backup">迁移前备份</button>':''}<span class="small muted">全部 ${sessions.length} 次 · 每页 25 次</span><div class="spacer"></div><button class="btn btn-sm" data-act="history-page" data-page="${historyPage-1}" ${historyPage===1?'disabled':''}>上一页</button><span>${historyPage} / ${Math.ceil(sessions.length/25)}</span><button class="btn btn-sm" data-act="history-page" data-page="${historyPage+1}" ${historyPage*25>=sessions.length?'disabled':''}>下一页</button>
     </div>
   </div>`;
 }
@@ -1544,6 +1556,7 @@ async function render() {
       case 'quiz': html = await viewQuiz(); break;
       case 'report': html = await viewReport(route.args[0]); break;
       case 'history': html = viewHistory(); break;
+      case 'insights': html = await window.StudyReport.view(reportHost()); break;
       case 'wrong': html = await viewWrong(); break;
       case 'favorites': html = await viewFavorites(); break;
       default: html = `${topbar('')}${emptyBox(ExamTools.icon('file'), '页面不存在', '')}`;
@@ -1554,6 +1567,7 @@ async function render() {
     MODAL = null;
     ExamTools.mount();
     window.MobileUI?.mount();
+    if(route.name==='insights')window.StudyReport.mount();
     syncClock();
     $('.modal [data-act="close-modal"]')?.focus();
     // 只有换了页面或换了题才回到顶部，避免看材料时被反复弹回
@@ -1572,6 +1586,8 @@ async function render() {
 /* ---------------------------------------------------------- 动作 */
 
 const ACT = {
+  'history-page'(e,el){V.historyPage=Number(el.dataset.page);render();},
+  async 'migration-storage-backup'(){const backup=await window.StudyStorage?.migrationBackup();if(!backup)return toast('当前浏览器没有旧版迁移备份');download('迁移前的完整备份.json',JSON.stringify(backup,null,2),'application/json');},
   'mobile-sheet'() {
     const sess = S.session; if (!sess) return;
     const answered = sess.refs.filter(r => sess.answers[r.qid]?.pick).length;
@@ -1935,6 +1951,7 @@ const ACT = {
     const qs = await ensureQuestions(sess.refs);
     const { rows, ...summary } = summarize(sess, qs);
     sess.meta = summary;
+    sess.evidence=Object.fromEntries(sess.refs.map((r,i)=>[r.qid,{question:qs[i],capturedAt:sess.submittedAt,source:r}]));
 
     // 收集错题
     const wb = getWrong();
@@ -1949,7 +1966,7 @@ const ACT = {
     }
     const list = getSessions();
     list.unshift(JSON.parse(JSON.stringify({ ...sess, refs: sess.refs, answers: sess.answers })));
-    if (!setSessions(list)) {
+    if (!setSessions(list) || !(await durableStorage.flush?.().then(()=>true,()=>false) ?? true)) {
       sess.submitted = false;
       saveActive();
       toast('成绩保存失败，当前练习已保留；请先导出备份或清理旧记录', 5000);
@@ -2044,17 +2061,18 @@ const ACT = {
       const f = inp.files[0];
       if (!f) return;
       const fr = new FileReader();
-      fr.onload = () => {
+      fr.onload = async () => {
         try {
           const d = JSON.parse(fr.result);
           if (!d || typeof d !== 'object' || !Array.isArray(d.sessions) || !d.sessions.every(validSession) || (d.active && !validSession(d.active)) || (d.wrong && (typeof d.wrong !== 'object' || Array.isArray(d.wrong)))) throw new Error('请使用「导出完整备份」生成的 JSON');
           if (d.favorites && (typeof d.favorites !== 'object' || Array.isArray(d.favorites) || !Object.values(d.favorites).every(v => v?.ref && typeof v.ref.qid === 'string' && ['p','q'].includes(v.ref.src) && typeof v.ref.key === 'string'))) throw new Error('收藏数据格式不正确');
-          if (d.sessions) setSessions(d.sessions);
-          if (d.favorites) store.set(K.favorites,d.favorites);
-          if (d.wrong) setWrong(d.wrong);
+          if(d.sessions){const merged=new Map(getSessions().map(s=>[s.id,s]));for(const s of d.sessions)merged.set(s.id,s);if(!setSessions([...merged.values()].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))))throw new Error('记录保存失败');}
+          if (d.favorites) store.set(K.favorites,{...getFavorites(),...d.favorites});
+          if (d.wrong) setWrong({...getWrong(),...d.wrong});
           if (d.settings) { SETTINGS = { ...DEFAULT_SETTINGS, ...d.settings }; saveSettings(); }
           if (d.active) { S.session = { ...d.active, paused: true }; S.shownAt = 0; saveActive(); }
-          toast('导入成功');
+          await durableStorage.flush?.();
+          toast('导入成功，已合并练习记录');
           render();
         } catch (err) { toast('导入失败：' + err.message, 4000); }
       };
@@ -2489,3 +2507,12 @@ if (!CAT) {
   S.shownAt = 0;
   render();
 }
+
+window.addEventListener('study-storage-error',e=>{
+  toast(e.detail,12000);let banner=document.getElementById('storage-failure');
+  if(!banner){banner=document.createElement('div');banner.id='storage-failure';banner.className='storage-failure';banner.innerHTML='<span>本机保存失败，请保持此页打开。</span><button class="btn btn-sm" data-storage-action="backup">导出完整备份</button><button class="btn btn-sm" data-storage-action="retry">重试保存</button>';document.body.appendChild(banner);}
+});
+document.addEventListener('click',async e=>{const action=e.target.closest('[data-storage-action]')?.dataset.storageAction;if(action==='backup')ACT.backup();if(action==='retry'){try{await window.StudyStorage.retry();document.getElementById('storage-failure')?.remove();toast('已保存全部待写记录');}catch(error){toast('仍未保存：'+error.message,7000);}}});
+window.addEventListener('beforeunload',e=>{if(window.StudyStorage?.pending()){e.preventDefault();e.returnValue='';}});
+window.addEventListener('study-storage-remote',()=>{if(route.name!=='quiz'&&!document.activeElement?.matches('input,textarea,select')){window.StudyReport?.invalidate();render();}});
+if(window.StudyStorage&&!window.StudyStorage.durable())toast('长期存储未启用，暂用本机缓存；请定期导出完整备份',10000);

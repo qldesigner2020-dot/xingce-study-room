@@ -1,9 +1,10 @@
 /* Loaded only by the hosted build. Local app keeps its original storage and startup. */
 (function() {
   'use strict';
+  const durableStorage=window.StudyStorage||localStorage;
   const journalKey='qb.cloud.journal.v1';
   const keys={settings:'qb.settings.v1',active:'qb.active.v1',sessions:'qb.sessions.v1',wrong:'qb.wrong.v1',favorites:'qb.favorites.v1'};
-  const read=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}};
+  const read=(key,fallback)=>{try{return JSON.parse(durableStorage.getItem(key))??fallback;}catch{return fallback;}};
   let state=read(journalKey,{userId:null,records:{},pending:{},conflicts:[]});
   let hooks={},timer,busy=false,offline=false,message='',sequence=0;
   state.records||={};state.pending||={};state.conflicts||=[];
@@ -11,7 +12,7 @@
     Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
   // PostgreSQL jsonb can reorder object keys; compare content rather than order.
   const same=(a,b)=>JSON.stringify(canonical(a??null))===JSON.stringify(canonical(b??null));
-  const persist=()=>{try{localStorage.setItem(journalKey,JSON.stringify(state));return true;}catch{message='同步缓存保存失败，请导出完整备份';return false;}};
+  const persist=()=>{try{durableStorage.setItem(journalKey,JSON.stringify(state));return true;}catch{message='同步缓存保存失败，请导出完整备份';return false;}};
   // Every tab shares this durable journal. Never commit a tab's old snapshot
   // over changes queued or acknowledged by another tab during a network await.
   function refreshJournal() {
@@ -21,15 +22,23 @@
       message='账号已在另一标签切换，请刷新页面';return false;
     }
     state=latest;state.conflicts||=[];
-    sequence=Math.max(sequence,...Object.values(state.pending).map(p=>p.seq||0));
+    sequence=Object.values(state.pending).reduce((n,p)=>Math.max(n,p.seq||0),sequence);
     return true;
   }
   const exclusive=fn=>typeof navigator!=='undefined'&&navigator.locks?.request?
     navigator.locks.request('xingce-cloud-sync',fn):fn();
   const effective=()=>({...Object.fromEntries(Object.entries(state.records).map(([k,r])=>[k,r.value])),
     ...Object.fromEntries(Object.entries(state.pending).map(([k,r])=>[k,r.value]))});
+  function sessionRows(list){
+    const out={};for(const s of list||[]){const raw=JSON.stringify(s);if(new TextEncoder().encode(raw).length<1200000){out['session:'+s.id]=s;continue;}
+      let h=2166136261,h2=5381;for(let i=0;i<raw.length;i++){h=Math.imul(h^raw.charCodeAt(i),16777619);h2=Math.imul(h2,33)^raw.charCodeAt(i);}
+      const generation=raw.length+'-'+(h>>>0).toString(16)+'-'+(h2>>>0).toString(16),count=Math.ceil(raw.length/250000);
+      out['session:'+s.id]={id:s.id,title:s.title,kind:s.kind,createdAt:s.createdAt,submittedAt:s.submittedAt,submitted:s.submitted,refs:[],answers:{},_cloudParts:count,_cloudGeneration:generation};
+      for(let index=0;index<count;index++)out['sessionpart:'+s.id+'_'+String(index).padStart(6,'0')]={sessionId:s.id,index,generation,text:raw.slice(index*250000,(index+1)*250000)};
+    }return out;
+  }
   function split(kind,value) {
-    if(kind==='sessions')return Object.fromEntries((value||[]).map(s=>['session:'+s.id,s]));
+    if(kind==='sessions')return sessionRows(value);
     if(kind==='favorites')return Object.fromEntries(Object.entries(value||{}).map(([k,v])=>['favorite:'+k,v]));
     if(kind==='wrong')return Object.fromEntries(Object.entries(value||{}).map(([k,v])=>['wrong:'+k,v]));
     return {[kind]:value};
@@ -39,8 +48,12 @@
     if(!refreshJournal())return;
     const kind=Object.keys(keys).find(k=>keys[k]===storageKey);if(!kind)return;
     const next=split(kind,value),old=effective();
-    const owns=k=>kind==='sessions'?k.startsWith('session:'):kind==='favorites'?k.startsWith('favorite:'):kind==='wrong'?k.startsWith('wrong:'):k===kind;
+    const incomplete=kind==='sessions'?Object.entries(old).filter(([k,s])=>k.startsWith('session:')&&s?._cloudParts&&!next[k]&&Array.from({length:s._cloudParts},(_,i)=>old['sessionpart:'+s.id+'_'+String(i).padStart(6,'0')]).some(p=>!p||p.generation!==s._cloudGeneration)).map(([,s])=>s.id):[];
+    const owns=k=>kind==='sessions'?k.startsWith('session:')||k.startsWith('sessionpart:'):kind==='favorites'?k.startsWith('favorite:'):kind==='wrong'?k.startsWith('wrong:'):k===kind;
     for(const key of new Set([...Object.keys(next),...Object.keys(old).filter(owns)])) {
+      // A read during a multi-batch upload may contain only the header. A new
+      // practice must never turn that temporarily invisible session into a deletion.
+      if(!next[key]&&incomplete.some(id=>key==='session:'+id||key.startsWith('sessionpart:'+id+'_')))continue;
       const v=next[key]??null;
       if(same(old[key],v))continue;
       // The quiz mutates its session in place. Keep the queued payload immutable
@@ -50,7 +63,13 @@
     message='';persist();update();clearTimeout(timer);timer=setTimeout(flush,1000);
   }
   function localValues(values) {
-    const sessions=Object.entries(values).filter(([k,v])=>k.startsWith('session:')&&v).map(([,v])=>v)
+    const cached=read(keys.sessions,[]);
+    const sessions=Object.entries(values).filter(([k,v])=>k.startsWith('session:')&&v).map(([,s])=>{
+      if(!s._cloudParts)return s;
+      const pieces=Array.from({length:s._cloudParts},(_,i)=>values['sessionpart:'+s.id+'_'+String(i).padStart(6,'0')]);
+      if(pieces.some(p=>!p||p.generation!==s._cloudGeneration)){message='正在读取完整练习分块，请稍后同步';return cached.find(old=>old.id===s.id)||null;}
+      try{return JSON.parse(pieces.map(p=>p.text).join(''));}catch{message='分批记录尚未完整，请重试同步';return cached.find(old=>old.id===s.id)||null;}
+    }).filter(Boolean)
       .sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
     const object=prefix=>Object.fromEntries(Object.entries(values).filter(([k,v])=>k.startsWith(prefix)&&v).map(([k,v])=>[k.slice(prefix.length),v]));
     let active=values.active||null;
@@ -61,7 +80,7 @@
     const values=localValues(effective());let changed=false;
     for(const [kind,key] of Object.entries(keys)) {
       const raw=JSON.stringify(values[kind]);
-      if(!same(read(key,null),values[kind])){localStorage.setItem(key,raw);changed=true;}
+      if(!same(read(key,null),values[kind])){durableStorage.setItem(key,raw);changed=true;}
     }
     if(changed)hooks.onRemote?.();
   }
@@ -89,9 +108,10 @@
     return window.CloudBackend.request(method,changes);
   }
   function status() {
+    if(window.StudyStorage?.error?.())return '本机保存失败，请备份';
     if(window.CloudBackend.isGuest())return '本机练习';
     return message|| (state.conflicts.length?'同步有冲突':offline?'离线，已本地保存':busy?'正在同步…':
-      Object.keys(state.pending).length?'待同步 '+Object.keys(state.pending).length+' 项':'云端已同步');
+      window.StudyStorage?.pending()?'正在本机保存…':Object.keys(state.pending).length?'待同步 '+Object.keys(state.pending).length+' 项':'云端已同步');
   }
   function update() {
     document.querySelectorAll('[data-cloud-status]').forEach(el=>el.textContent=status());
@@ -103,6 +123,7 @@
     busy=true;update();
     try {
       await exclusive(async()=>{
+      await window.StudyStorage?.refresh();
       if(!refreshJournal()||state.conflicts.length)return;
       while(Object.keys(state.pending).length) {
         const batch=[];let size=0;
@@ -113,7 +134,9 @@
           batch.push(row);size+=bytes;
         }
         const sent=Object.fromEntries(batch.map(r=>[r.key,{...state.pending[r.key]}]));
+        await window.StudyStorage?.flush();
         const data=await request('POST',batch);
+        await window.StudyStorage?.refresh();
         if(!refreshJournal())return;
         // New keystrokes can arrive during the request. Retain them, but advance their base version.
         const versions=Object.fromEntries(data.records.map(r=>[r.key,r]));
@@ -124,7 +147,7 @@
             else local.version=remote.version;
           }
         }
-        offline=false;message='';apply(data,false);
+        offline=false;message='';apply(data,false);await window.StudyStorage?.flush();
         if(state.conflicts.length)break;
       }
       });
@@ -136,7 +159,7 @@
     if(window.CloudBackend.isGuest()||busy||hooks.isBusy?.()||document.activeElement?.matches('input,textarea,select'))return;
     if(Object.keys(state.pending).length)return flush();
     busy=true;update();
-    try {await exclusive(async()=>{if(refreshJournal())apply(await request());});offline=false;message='';}
+    try {await exclusive(async()=>{await window.StudyStorage?.refresh();if(refreshJournal()){const data=await request();await window.StudyStorage?.refresh();apply(data);}});offline=false;message='';}
     catch(error){offline=true;if(error.message==='请重新登录')message=error.message;}
     finally {busy=false;update();}
     if(Object.keys(state.pending).length&&!state.conflicts.length)flush();
@@ -146,7 +169,7 @@
     const overlay=document.createElement('div');overlay.id='cloud-panel';overlay.className='modal-bg';
     overlay.innerHTML='<section class="modal" role="dialog" aria-modal="true" aria-label="云端同步"><div class="modal-head"><h3>云端同步</h3><button class="btn" data-cloud-action="close">关闭</button></div><div class="modal-body"><p data-cloud-panel-status></p><p>同一账号在不同电脑登录，自动同步练习、收藏、自评、复盘描述和笔迹。</p><p>迁移本地记录：先在本地版「练习记录」导出完整备份，再到在线版的同一页面导入。首次同步前请保留备份文件。</p>'+
       (state.conflicts.length?'<div class="card card-pad"><p>两台电脑修改了同一份记录。请先下载冲突明细，再选择采用哪一份；其他记录不受影响。</p><div class="row"><button class="btn" data-cloud-action="backup">下载冲突明细</button><button class="btn" data-cloud-action="cloud">采用云端版本</button><button class="btn" data-cloud-action="local">保留当前电脑版本</button></div></div>':'')+
-      (localStorage.getItem('qb.cloud.migration-backup.v1')?'<p>登录前的本机记录已保留为备份，可以下载后在「练习记录」导入。</p><button class="btn" data-cloud-action="migration-backup">下载登录前的完整备份</button>':'')+
+      (durableStorage.getItem('qb.cloud.migration-backup.v1')?'<p>登录前的本机记录已保留为备份，可以下载后在「练习记录」导入。</p><button class="btn" data-cloud-action="migration-backup">下载登录前的完整备份</button>':'')+
       (window.CloudBackend.isGuest()?'<p><button class="btn btn-primary" data-cloud-action="login">登录并同步</button></p>':
       '<p><button class="btn btn-primary" data-cloud-action="retry">立即同步</button><button class="btn btn-ghost" data-cloud-action="logout">退出登录</button></p>')+'</div></section>';
     document.body.appendChild(overlay);update();
@@ -157,13 +180,13 @@
     if(action==='close')return document.getElementById('cloud-panel')?.remove();
     if(action==='login')return window.CloudBackend.signIn();
     if(action==='migration-backup') {
-      const blob=new Blob([localStorage.getItem('qb.cloud.migration-backup.v1')],{type:'application/json'});
+      const blob=new Blob([durableStorage.getItem('qb.cloud.migration-backup.v1')],{type:'application/json'});
       const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='登录前的行测完整备份.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),4000);return;
     }
     if(action==='logout') {
       if(hooks.isBusy?.()){alert('请先退出当前练习，当前作答会保存在本机。');return;}
       if(Object.keys(state.pending).length){alert('还有未同步的记录，请先同步或导出完整备份，再退出登录。');return;}
-      try {await window.CloudBackend.signOut();for(const key of Object.values(keys))localStorage.removeItem(key);localStorage.removeItem(journalKey);location.reload();}
+      try {await window.StudyStorage?.flush();await window.CloudBackend.signOut();for(const key of Object.values(keys))durableStorage.removeItem(key);durableStorage.removeItem(journalKey);await window.StudyStorage?.flush();location.reload();}
       catch(error){alert(error.message||'退出失败，请重试');}return;
     }
     if(action==='backup') {
@@ -184,11 +207,13 @@
     }
   });
   async function init() {
+    await window.StudyStorage?.ready;
+    state=read(journalKey,{userId:null,records:{},pending:{},conflicts:[]});
     const auth=await window.CloudBackend.ready;
     if(auth.guest)return true;
     if(auth.userId&&state.userId&&auth.userId!==state.userId) {
-      localStorage.setItem('qb.cloud.previous-account',JSON.stringify({state,cache:localValues(effective())}));
-      for(const key of Object.values(keys))localStorage.removeItem(key);
+      durableStorage.setItem('qb.cloud.previous-account',JSON.stringify({state,cache:localValues(effective())}));
+      for(const key of Object.values(keys))durableStorage.removeItem(key);
       state={userId:null,records:{},pending:{},conflicts:[]};persist();
     }
     if(auth.offline&&auth.userId===state.userId) {
@@ -201,7 +226,7 @@
       const data=await request();
       if(!state.userId||state.userId===data.userId)refreshJournal();
       if(state.userId&&state.userId!==data.userId) {
-        localStorage.setItem('qb.cloud.previous-account',JSON.stringify({state,cache:localValues(effective())}));
+        durableStorage.setItem('qb.cloud.previous-account',JSON.stringify({state,cache:localValues(effective())}));
         state={userId:data.userId,records:{},pending:{},conflicts:[]};
       } else if(state.userId) {
         // Recover edits whose journal write was interrupted, using the durable local cache.
@@ -209,7 +234,7 @@
       } else {
         const cache={sessions:read(keys.sessions,[]),settings:read(keys.settings,{}),active:read(keys.active,null),wrong:read(keys.wrong,{}),favorites:read(keys.favorites,{})};
         if(cache.sessions.length||cache.active||Object.keys(cache.favorites).length||Object.keys(cache.wrong).length)
-          localStorage.setItem('qb.cloud.migration-backup.v1',JSON.stringify({kind:'xingce-backup',version:1,exportedAt:Date.now(),...cache}));
+          durableStorage.setItem('qb.cloud.migration-backup.v1',JSON.stringify({kind:'xingce-backup',version:1,exportedAt:Date.now(),...cache}));
       }
       apply(data,false);offline=false;flush();return true;
     } catch(error) {
@@ -228,6 +253,7 @@
     if(!busy&&!hooks.isBusy?.())materialize();
     update();
   });
+  window.addEventListener('study-storage-remote',()=>{if(window.CloudBackend.isGuest()||!refreshJournal())return;if(!busy&&!hooks.isBusy?.())materialize();update();});
   window.addEventListener('online',()=>{offline=false;flush();pull();});
   document.addEventListener('visibilitychange',()=>{if(document.hidden)flush();else pull();});
   window.CloudSync.ready.then(ok=>{

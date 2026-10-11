@@ -1,0 +1,9 @@
+import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';import crypto from 'node:crypto';
+const target=process.argv[2],bytes=fs.readFileSync(target),files=new Map(),v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);let i=0;
+while(v.getUint32(i,true)===0x04034b50){const size=v.getUint32(i+18,true),n=v.getUint16(i+26,true),x=v.getUint16(i+28,true),name=bytes.subarray(i+30,i+30+n).toString('utf8'),start=i+30+n+x;files.set(name,bytes.subarray(start,start+size));i=start+size;}
+const manifest=JSON.parse(files.get('manifest.json'));for(const f of manifest.files){assert.equal(f.bytes,files.get(f.path).length);assert.equal(f.sha256,crypto.createHash('sha256').update(files.get(f.path)).digest('hex'));}
+for(const [name,b] of files)if(name.endsWith('.md'))for(const m of b.toString('utf8').matchAll(/\]\(([^)]+)\)/g)){const p=m[1].split('#')[0];if(!p||/^https?:/.test(p))continue;assert(files.has(path.posix.normalize(path.posix.join(path.posix.dirname(name),p))),'Dangling '+name+': '+p);}
+const annotations=JSON.parse(files.get('raw/annotations.json'));const out=path.resolve('tmp/report-zip-verified');if(!out.startsWith(process.cwd()+path.sep))throw new Error('Unsafe output');fs.mkdirSync(out,{recursive:true});
+for(const [name,b] of files)if(name.startsWith('annotations/'))fs.writeFileSync(path.join(out,path.basename(name)),b);
+const rows=JSON.parse(files.get('raw/question-index.json'));assert.equal(rows.length,manifest.attempts);assert.equal(JSON.parse(files.get('raw/sessions.json')).reduce((n,s)=>n+s.refs.length,0),rows.length);
+console.log(JSON.stringify({zipBytes:bytes.length,files:files.size,attempts:rows.length,images:[...files.keys()].filter(k=>k.startsWith('images/')).length,annotations:annotations.length,missing:manifest.missing,sha256:'verified',links:'verified',previewDirectory:out},null,2));

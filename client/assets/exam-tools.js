@@ -251,7 +251,8 @@ const ExamTools = (() => {
     const path = document.createElementNS(NS, 'path');
     path.setAttribute('fill','none'); path.setAttribute('stroke',inkColor); path.setAttribute('stroke-width','2'); path.setAttribute('stroke-linecap','round'); path.setAttribute('stroke-linejoin','round');
     svg.appendChild(path); svg.setPointerCapture(e.pointerId);
-    drawing = {zone, svg, path, pointer:e.pointerId, rect, font, zoneRect:inkSurface(zone).getBoundingClientRect(), stroke:{id:'ink-'+newId(),at:Date.now(),zone:zone.dataset.markZone,anchor,color:inkColor,width:2,points:[]}};
+    const surfaceRect=inkSurface(zone).getBoundingClientRect(),zoneBounds=zone.getBoundingClientRect();
+    drawing = {zone, svg, path, pointer:e.pointerId, rect, font, zoneRect:surfaceRect, stroke:{id:'ink-'+newId(),at:Date.now(),zone:zone.dataset.markZone,anchor,color:inkColor,width:2,points:[],reference:{width:surfaceRect.width,height:surfaceRect.height,font,originX:rect.left-surfaceRect.left,originY:rect.top-surfaceRect.top,textWidth:zoneBounds.width,paperSize:SETTINGS.paperSize}}};
     addPoint(e);
   });
   function addPoint(e) {

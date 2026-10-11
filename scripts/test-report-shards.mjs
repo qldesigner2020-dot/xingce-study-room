@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const saved=new Map(),records=new Map(),batches=[];
+const backend={ready:Promise.resolve({guest:false,userId:'owner'}),isGuest:()=>false,async request(method='GET',changes=[]){if(method==='POST'){assert(changes.length<=25);assert(new TextEncoder().encode(JSON.stringify(changes)).length<2400000);batches.push(changes);for(const r of changes){assert(new TextEncoder().encode(JSON.stringify(r.value)).length<1700000);assert.equal(r.version,records.get(r.key)?.version||0);records.set(r.key,{...r,version:r.version+1});}}return {userId:'owner',records:method==='POST'?changes.map(r=>records.get(r.key)):[...records.values()]};}};
+const storage={getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,String(v)),removeItem:k=>saved.delete(k)};
+const context={window:{CloudBackend:backend,addEventListener(){}},document:{querySelectorAll:()=>[],activeElement:null,addEventListener(){},createElement:()=>({}),body:{appendChild(){}}},localStorage:storage,TextEncoder,setTimeout:()=>0,clearTimeout(){},setInterval:()=>0};vm.runInNewContext(fs.readFileSync('client/assets/cloud-sync.js','utf8'),context);
+const sync=context.window.CloudSync;await sync.ready;
+const long={id:'long-session',title:'超长练习',submitted:true,refs:[{qid:'q',src:'p',key:'paper'}],answers:{q:{pick:'A',reflection:'长期复盘🙂'.repeat(230000)}}};
+storage.setItem('qb.sessions.v1',JSON.stringify([long]));sync.changed('qb.sessions.v1',[long]);await sync.flush();assert(batches.length>1);assert(records.has('sessionpart:long-session_000000'));assert.deepEqual(JSON.parse(storage.getItem('qb.sessions.v1')),[long]);
+const oldKeys=[...records.keys()].filter(k=>k.startsWith('sessionpart:'));
+long.answers.q.reflection='缩短后的复盘';storage.setItem('qb.sessions.v1',JSON.stringify([long]));sync.changed('qb.sessions.v1',[long]);await sync.flush();assert.deepEqual(JSON.parse(storage.getItem('qb.sessions.v1')),[long]);for(const key of oldKeys)assert.equal(records.get(key).value,null,'shrinking a session tombstones old shards');
+// Simulate a fresh device opening midway through another device's upload.
+saved.clear();records.clear();records.set('session:partial',{key:'session:partial',value:{id:'partial',title:'上传中',_cloudParts:2,_cloudGeneration:'fixture'},version:1});records.set('sessionpart:partial_000000',{key:'sessionpart:partial_000000',value:{sessionId:'partial',index:0,generation:'fixture',text:'{'},version:1});
+vm.runInNewContext(fs.readFileSync('client/assets/cloud-sync.js','utf8'),context);const fresh=context.window.CloudSync;await fresh.ready;
+const small={id:'new',title:'新练习',refs:[],answers:{}};storage.setItem('qb.sessions.v1',JSON.stringify([small]));fresh.changed('qb.sessions.v1',[small]);const pending=JSON.parse(storage.getItem('qb.cloud.journal.v1')).pending;assert(!pending['session:partial']);assert(!pending['sessionpart:partial_000000']);
+console.log('PASS cloud shards: multi-batch Unicode, lossless reconstruction, shrink tombstones, and partial-upload preservation');
