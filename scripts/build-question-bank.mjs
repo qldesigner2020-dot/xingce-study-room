@@ -139,6 +139,7 @@ function parseFile(absPath, moduleKey) {
   const questions = [];
   let cur = null;
   let curMat = null; // 当前材料 {no, lines[]}
+  let inClassification = false;
 
   const flush = () => {
     if (cur) {
@@ -148,6 +149,16 @@ function parseFile(absPath, moduleKey) {
   };
 
   for (const line of lines) {
+    if (line === '<!-- kaogong-tags:start -->') { inClassification = true; continue; }
+    if (inClassification) {
+      if (line === '<!-- kaogong-tags:end -->') { inClassification = false; continue; }
+      const annotation = line.match(/^<!-- kaogong-taxonomy: (.+) -->$/);
+      if (annotation) {
+        if (!cur) throw new Error('Classification outside question: ' + absPath);
+        cur.classification = JSON.parse(annotation[1]);
+      }
+      continue;
+    }
     const mm = line.match(RE_MAT);
     if (mm) {
       flush();
@@ -256,6 +267,7 @@ function buildQuestion(q, src) {
     qid: q.qid,
     no: q.no,
     type: q.type,
+    classification: q.classification,
     module: src.moduleKey,
     stem,
     material: q.materialText && !standaloneGraphic ? rewriteImages(toParagraphs(q.materialText)) : undefined,

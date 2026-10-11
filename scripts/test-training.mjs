@@ -6,6 +6,12 @@ const read=(file,name)=>{const c={window:{}};vm.runInNewContext(fs.readFileSync(
 const index=read('client/data/training-index.js','QB_TRAINING_INDEX'),cat=read('client/data/catalog.js','QB_CATALOG');
 const ctx={};vm.runInNewContext(fs.readFileSync('client/assets/training-tools.js','utf8'),ctx);const tools=ctx.TrainingTools;
 const appSource=fs.readFileSync('client/assets/app.js','utf8');
+const changeSource=appSource.match(/const CHANGE_ACTS = new Set\((\[[^;]+\])\);/);
+assert.ok(changeSource,'form event routing exists');
+const changes=new Set(vm.runInNewContext(changeSource[1]));
+for(const select of appSource.matchAll(/<select\b[^>]*data-act="([^"]+)"/g)){
+  assert.ok(changes.has(select[1]),`select ${select[1]} must dispatch on change`);
+}
 const statistics={CAT:cat};
 vm.runInNewContext(appSource.slice(appSource.indexOf('function refTypeLabel('),appSource.indexOf('/* ---------------------------------------------------------- 报告 / 导出 */')),statistics);
 const stats=statistics.summarize({refs:[
@@ -40,6 +46,20 @@ assert.equal(fixture('数学运算','某单位作出安排，问结果是多少'
 assert.deepEqual(JSON.parse(JSON.stringify(tools.allocate(['a','b'],{a:100,b:100},{a:9,b:1},20))),{a:18,b:2},'uses exam occurrence weights, not equal pool capacities');
 assert.deepEqual(JSON.parse(JSON.stringify(tools.allocate(['a','b'],{a:1,b:99},{a:9,b:1},20))),{a:1,b:19},'capacity shortage is redistributed within selected tags');
 const selected=index.groups.flatMap(g=>g.leaves.map(t=>t.id));
+assert.equal(index.version,2);assert.equal(index.taxonomyVersion,'fenbi-v2.20261011');
+const oldSingle=tools.migrateSelection(index,['逻辑填空::双空填空']);
+assert.ok(oldSingle.selected.every(id=>id.startsWith('逻辑填空::'))&&oldSingle.selected.length>3);
+assert.ok(oldSingle.qualifier.endsWith('::双空填空'),'old blank-count selection becomes a form filter');
+assert.deepEqual(Array.from(tools.migrateSelection(index,['片段阅读::下文推断']).selected),['语句表达::接语选择']);
+for(const qualifier of index.qualifiers){
+  const options={region:'',years:[],selected,total:20,qualifier:qualifier.id},plan=tools.plan(index,cat,options),sample=tools.sample(index,cat,options,5);
+  assert.equal(sample.total,plan.total);assert.equal(new Set(sample.refs.map(r=>r.qid)).size,sample.total);
+  for(const ref of sample.refs){
+    const c=papers.get(ref.key).questions.find(q=>q.qid===ref.qid).classification;
+    const labels=qualifier.kind==='辅助考点'?c.auxiliary:qualifier.kind==='解题方法'?c.methods:c.forms;
+    assert.ok(labels.includes(qualifier.label),'qualifier matches exact persisted question');
+  }
+}
 for(const region of ['海南','国考','安徽',''])for(const years of [['2026'],['2025','2026'],[]]){
   const options={region,years,selected,total:100,preferUnseen:true},plan=tools.plan(index,cat,options);
   for(let seed=1;seed<=12;seed++){

@@ -22,13 +22,15 @@
   function scope(index,catalog,options){
     const years=new Set(options.years||[]),region=options.region||'';
     const papers=catalog.papers.filter(p=>(!years.size||years.has(String(p.year)))&&(!region||p.region===region));
-    const ids=new Set(papers.map(p=>p.id)),buckets={},counts={},weights={};
+    const ids=new Set(papers.map(p=>p.id)),buckets={},counts={},weights={},qualifierSets={};
     for(const r of index.records){
       const source=r.src.filter(s=>ids.has(s[0]));if(!source.length)continue;
+      for(const qualifier of r.filters||[])(qualifierSets[qualifier]||=new Set()).add(r.qid);
+      if(options.qualifier&&!(r.filters||[]).includes(options.qualifier))continue;
       (buckets[r.leaf]||=[]).push({...r,src:source});weights[r.leaf]=(weights[r.leaf]||0)+source.length;
     }
     for(const [leaf,records] of Object.entries(buckets))counts[leaf]=new Set(records.map(r=>r.qid)).size;
-    return {papers,buckets,counts,weights,uniqueCount:new Set(Object.values(buckets).flat().map(r=>r.qid)).size};
+    return {papers,buckets,counts,weights,qualifierCounts:Object.fromEntries(Object.entries(qualifierSets).map(([k,v])=>[k,v.size])),uniqueCount:new Set(Object.values(buckets).flat().map(r=>r.qid)).size};
   }
   function plan(index,catalog,options){
     const info=scope(index,catalog,options),selected=new Set(options.selected||[]),ids=index.groups.flatMap(g=>g.leaves.map(t=>t.id)).filter(id=>selected.has(id));
@@ -50,7 +52,7 @@
         const sources=r.src.filter(s=>!used.has(s[3]||r.qid));if(!sources.length)continue;
         const source=sources[Math.floor(random()*sources.length)],qid=source[3]||r.qid;
         used.add(qid);wanted--;
-        picked.push({qid,src:'p',key:source[0],no:source[1],materialNo:source[2],type:r.t,leaf:id});
+        picked.push({qid,src:'p',key:source[0],no:source[1],materialNo:source[2],type:r.t,leaf:id,classification:r.classification});
       }
     }
     const groupOf=new Map(index.groups.flatMap(g=>g.leaves.map(t=>[t.id,g])));
@@ -64,5 +66,18 @@
     const refs=[...groups.values()].sort((a,b)=>moduleOrder.indexOf(a[0].module)-moduleOrder.indexOf(b[0].module)).flatMap(a=>a[0].module==='资料分析'?a.sort((x,y)=>x.no-y.no):a);
     return {...result,refs,total:refs.length};
   }
-  root.TrainingTools={allocate,scope,plan,sample};
+  function migrateSelection(index,selected,qualifier=''){
+    const valid=new Set(index.groups.flatMap(g=>g.leaves.map(t=>t.id))),out=new Set(),forms=[];
+    for(const id of selected||[]){
+      if(valid.has(id))out.add(id);
+      else if(index.legacyLeaves?.[id]){for(const replacement of index.legacyLeaves[id])if(valid.has(replacement))out.add(replacement);}
+      else if(/^逻辑填空::(?:单空填空|双空填空|三空及以上)$/.test(id)){
+        index.groups.find(g=>g.id==='逻辑填空')?.leaves.forEach(t=>out.add(t.id));forms.push(id.split('::')[1]);
+      }
+    }
+    if(qualifier&&!index.qualifiers?.some(q=>q.id===qualifier))qualifier='';
+    if(forms.length===1&&!qualifier)qualifier=index.qualifiers?.find(q=>q.kind==='题面形式'&&q.group==='逻辑填空'&&q.label===forms[0])?.id||'';
+    return {selected:[...out],qualifier};
+  }
+  root.TrainingTools={allocate,scope,plan,sample,migrateSelection};
 })(typeof window==='object'?window:globalThis);
