@@ -51,6 +51,74 @@ const oldSingle=tools.migrateSelection(index,['逻辑填空::双空填空']);
 assert.ok(oldSingle.selected.every(id=>id.startsWith('逻辑填空::'))&&oldSingle.selected.length>3);
 assert.ok(oldSingle.qualifier.endsWith('::双空填空'),'old blank-count selection becomes a form filter');
 assert.deepEqual(Array.from(tools.migrateSelection(index,['片段阅读::下文推断']).selected),['语句表达::接语选择']);
+const blank=index.qualifiers.find(q=>q.group==='逻辑填空'&&q.label==='双空填空').id;
+const logic=index.groups.find(g=>g.id==='逻辑填空'),reading=index.groups.find(g=>g.id==='片段阅读');
+const baseOptions={region:'',years:[],selected,total:60};
+const baseScope=tools.scope(index,cat,baseOptions);
+const scopedOptions={...baseOptions,groupFilters:{逻辑填空:{form:blank}}};
+const doubleScope=tools.scope(index,cat,scopedOptions);
+for(const group of index.groups.filter(g=>g!==logic))for(const leaf of group.leaves){
+  assert.equal(doubleScope.counts[leaf.id]||0,baseScope.counts[leaf.id]||0,`double blanks do not filter ${leaf.id}`);
+}
+const combined={...scopedOptions,selected:[...logic.leaves,...reading.leaves].map(t=>t.id)};
+const combinedPlan=tools.plan(index,cat,combined),combinedSample=tools.sample(index,cat,combined,42);
+assert.equal(combinedSample.total,combinedPlan.total);
+assert.equal(new Set(combinedSample.refs.map(r=>r.qid)).size,combinedSample.total);
+assert.ok(combinedSample.refs.some(r=>r.leaf.startsWith('片段阅读::')),'reading stays in a mixed exercise');
+assert.ok(combinedSample.refs.some(r=>r.leaf.startsWith('逻辑填空::')),'double blanks stay in a mixed exercise');
+for(const ref of combinedSample.refs.filter(r=>r.leaf.startsWith('逻辑填空::'))){
+  assert.ok(papers.get(ref.key).questions.find(q=>q.qid===ref.qid).classification.forms.includes('双空填空'));
+}
+const migrate=prefs=>JSON.parse(JSON.stringify(tools.migratePreferences(index,prefs)));
+const migratedEmpty=migrate({activeModule:'言语理解与表达',selected:[],qualifier:blank});
+assert.equal(migratedEmpty.mode,'single');assert.equal(migratedEmpty.activeGroup,'逻辑填空');
+assert.equal(migratedEmpty.qualifier,'');assert.equal(migratedEmpty.groupFilters.逻辑填空.form,blank);
+assert.deepEqual(migratedEmpty.selected,Array.from(logic.leaves,t=>t.id),'old empty selection offers a usable single exercise');
+const migratedOld=migrate({selected:['逻辑填空::双空填空']});
+assert.equal(migratedOld.activeGroup,'逻辑填空','old form preferences open their matching module');
+const migratedCombined=migrate({activeModule:'言语理解与表达',selected:[logic.leaves[0].id,reading.leaves[0].id],qualifier:blank});
+assert.equal(migratedCombined.mode,'combined');assert.equal(migratedCombined.selected.length,2);
+assert.equal(migratedCombined.groupFilters.片段阅读,undefined);
+const explicitClear=migrate({mode:'single',activeModule:'言语理解与表达',activeGroup:'片段阅读',selected:[]});
+assert.deepEqual(explicitClear.selected,[],'reopening respects an explicit clear');
+// Three independent fields compose with AND. Facets ignore only their own field.
+const facetIndex={groups:[{id:'logic',module:'语言',leaves:[{id:'logic::a'}]},{id:'read',module:'语言',leaves:[{id:'read::a'}]}],
+  records:[['a',['辅助考点::A','解题方法::M','题面形式::双空']],['b',['辅助考点::B','解题方法::M','题面形式::双空']],['c',['辅助考点::A','解题方法::M','题面形式::单空']],['d',['辅助考点::A','解题方法::N','题面形式::双空']]].map(([qid,filters])=>({qid,leaf:'logic::a',src:[['p',1,0,qid]],filters})).concat([{qid:'r',leaf:'read::a',src:[['p',5,0,'r']],filters:[]}])};
+const facetCatalog={papers:[{id:'p',year:2025,region:'海南'},{id:'other',year:2026,region:'国考'}]};
+const three={auxiliary:'辅助考点::A',method:'解题方法::M',form:'题面形式::双空'};
+const facet=tools.scope(facetIndex,facetCatalog,{region:'海南',years:['2025'],groupFilters:{logic:three}});
+assert.equal(facet.counts['logic::a'],1);assert.equal(facet.counts['read::a'],1);
+assert.equal(facet.facetCounts.logic.auxiliary['辅助考点::B'],1);
+assert.equal(facet.facetCounts.logic.method['解题方法::N'],1);
+assert.equal(facet.facetCounts.logic.form['题面形式::单空'],1);
+assert.equal(tools.scope(facetIndex,facetCatalog,{region:'海南',years:['2025'],groupFilters:{logic:{form:three.form,method:three.method}}}).counts['logic::a'],2);
+assert.equal(tools.scope(facetIndex,facetCatalog,{region:'海南',years:['2026'],groupFilters:{logic:three}}).uniqueCount,0,'facets respect the same source year-region intersection');
+const crossMethod=index.qualifiers.find(q=>q.kind==='解题方法'&&new Set(index.records.filter(r=>r.filters.includes(q.id)).map(r=>r.leaf.split('::')[0])).size>1);
+assert.ok(crossMethod,'real bank has methods shared by data-analysis groups');
+const supported=index.groups.filter(g=>index.records.some(r=>g.leaves.some(t=>t.id===r.leaf)&&r.filters.includes(crossMethod.id)));
+const shared=migrate({mode:'combined',activeModule:'资料分析',selected:supported.flatMap(g=>g.leaves.map(t=>t.id)),qualifier:crossMethod.id});
+for(const g of supported)assert.equal(shared.groupFilters[g.id]?.method,crossMethod.id,`old method migrates to supported ${g.id}`);
+assert.ok(tools.plan(index,cat,{...shared,total:30,years:[]}).total>0);
+// Loading is asynchronous: repeated taps must not create competing sessions,
+// and later UI edits must not relabel the already sampled question set.
+let releaseQuestions,actionRenders=0;const loading=new Promise(resolve=>{releaseQuestions=resolve;}),started=[];
+const custom={selected:new Set([logic.leaves[0].id]),groupFilters:{逻辑填空:{form:blank}},starting:false};
+const actionContext={structuredClone,Set,V:{custom},route:{name:'custom'},TRAINING_INDEX:index,
+  CAT:cat,TrainingTools:{sample:()=>({refs:[{qid:'load-test',specialty:'词义侧重'}],total:1,papers:[{}],allocations:{}})},
+  trainingOptions:()=>({selected:[...custom.selected],groupFilters:custom.groupFilters,years:[],region:'',mode:'single'}),
+  trainingConditions:()=>['逻辑填空：双空填空'],trainingFilterLabels:()=>['双空填空'],
+  render:()=>{actionRenders++;},toast:()=>{},getSessions:()=>[],ensureQuestions:()=>loading,newId:()=>String(started.length),startSession:s=>{started.push(s);actionRenders++;}};
+const startAction=appSource.slice(appSource.indexOf("  async 'start-custom'() {"),appSource.indexOf('  /* 答题：全程不提示对错'));
+vm.runInNewContext('globalThis.actions={'+startAction+'}',actionContext);
+const firstStart=actionContext.actions['start-custom']();
+await actionContext.actions['start-custom']();
+custom.selected=new Set([reading.leaves[0].id]);custom.groupFilters.逻辑填空.form='changed-during-load';
+releaseQuestions([{qid:'load-test'}]);await firstStart;
+assert.equal(started.length,1,'rapid taps start only one session');
+assert.equal(started[0].training.groupFilters.逻辑填空.form,blank,'export conditions describe the sampled selection');
+assert.ok(started[0].title.includes('词义侧重'),'title describes the sampled concept');
+assert.equal(custom.starting,false,'loading guard always releases');
+assert.equal(actionRenders,2,'loading cleanup must not rerender away the unfinished-exercise confirmation');
 for(const qualifier of index.qualifiers){
   const options={region:'',years:[],selected,total:20,qualifier:qualifier.id},plan=tools.plan(index,cat,options),sample=tools.sample(index,cat,options,5);
   assert.equal(sample.total,plan.total);assert.equal(new Set(sample.refs.map(r=>r.qid)).size,sample.total);

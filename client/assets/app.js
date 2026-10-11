@@ -478,7 +478,10 @@ function buildMarkdown(sessions, opts = {}) {
     out.push(`- 题量：${m.total}　作答：${m.answered}　未答：${m.unanswered}`);
     out.push(`- 正确：${m.right}　错误：${m.wrong}　正确率：${pct(m.right, m.answered)}（按已作答计）`);
     out.push(`- 答题总用时：${fmtDur(m.totalMs)}　已答题平均用时：${avgSec(m.answeredMs, m.answered)}`);
-    if(sess.training)out.push(`- 专项范围：${sess.training.region||'全部地区'}；${sess.training.years.length?sess.training.years.join('、'):'不限年份'}；参考 ${sess.training.papers} 份真题`, `- 组卷依据：${sess.training.basis}`);
+    if(sess.training){
+      out.push(`- 专项范围：${sess.training.region||'全部地区'}；${sess.training.years.length?sess.training.years.join('、'):'不限年份'}；参考 ${sess.training.papers} 份真题`, `- 组卷依据：${sess.training.basis}`);
+      if(trainingConditions(sess.training).length)out.push('- 题型筛选：'+trainingConditions(sess.training).join('；'));
+    }
     const reviewRows = summarize(sess, qs).rows;
     out.push(`- 自评统计：蒙对 ${reviewRows.filter(r => r.correct && r.a.review?.confidence === 'guess').length}；答对但犹豫 ${reviewRows.filter(r => r.correct && r.a.review?.confidence === 'hesitant').length}；记得答案 ${reviewRows.filter(r => r.a.review?.familiarity === 'remember').length}；答对且思路清楚 ${reviewRows.filter(r => r.correct && r.a.review?.confidence === 'clear' && r.a.review?.familiarity !== 'remember').length}；已答但未标注把握 ${reviewRows.filter(r => r.answered && !CONFIDENCE[r.a.review?.confidence]).length}`);
     out.push('');
@@ -658,6 +661,10 @@ const V = {
     activeModule: SETTINGS.training?.activeModule || '数量关系',
     preferUnseen: SETTINGS.training?.preferUnseen !== false,
     qualifier: SETTINGS.training?.qualifier || '',
+    mode: SETTINGS.training?.mode || 'single',
+    starting: false,
+    activeGroup: SETTINGS.training?.activeGroup || '',
+    groupFilters: SETTINGS.training?.groupFilters || {},
     years: new Set(SETTINGS.training?.years || Array.from({ length: CAT.yearRange[1] - CAT.yearRange[0] + 1 }, (_, i) => String(CAT.yearRange[0] + i))),
   },
   historySel: new Set(),
@@ -915,49 +922,94 @@ async function viewPaper(pid) {
 
 function saveCustom() {
   const c=V.custom;
-  SETTINGS.training={selected:[...c.selected],total:c.total,region:c.region,activeModule:c.activeModule,preferUnseen:c.preferUnseen,years:[...c.years],qualifier:c.qualifier,taxonomyVersion:TRAINING_INDEX?.taxonomyVersion};
+  SETTINGS.training={selected:[...c.selected],total:c.total,region:c.region,activeModule:c.activeModule,activeGroup:c.activeGroup,mode:c.mode,groupFilters:c.groupFilters,preferUnseen:c.preferUnseen,years:[...c.years],qualifier:'',taxonomyVersion:TRAINING_INDEX?.taxonomyVersion};
   saveSettings();
 }
 function trainingOptions() {const c=V.custom;return {...c,selected:[...c.selected],years:[...c.years]};}
+function trainingFilterLabels(filters) {
+  return Object.values(filters||{}).filter(Boolean).map(id=>TRAINING_INDEX?.qualifiers?.find(t=>t.id===id)?.label||id.split('::').at(-1));
+}
+function focusTrainingGroup(id) {
+  const group=TRAINING_INDEX.groups.find(g=>g.id===id);if(!group)return;
+  const c=V.custom,changed=c.activeGroup!==id;
+  c.activeGroup=id;c.activeModule=group.module;
+  if(c.mode==='single'&&changed)c.selected=new Set(group.leaves.map(t=>t.id));
+}
+function setTrainingFilter(field,id,group=V.custom.activeGroup) {
+  const c=V.custom;
+  if(id)(c.groupFilters[group]||={})[field]=id;
+  else if(c.groupFilters[group]){
+    delete c.groupFilters[group][field];
+    if(!Object.keys(c.groupFilters[group]).length)delete c.groupFilters[group];
+  }
+  c.qualifier='';saveCustom();render();
+}
+function trainingConditions(training) {
+  if(!training)return [];
+  const labels=Object.entries(training.groupFilters||{}).map(([group,filters])=>group+'：'+trainingFilterLabels(filters).join('、'));
+  if(!labels.length&&training.qualifier)labels.push(...trainingFilterLabels({legacy:training.qualifier}));
+  return labels;
+}
 function viewCustom() {
   if(!TRAINING_INDEX||!window.TrainingTools)return topbar('custom')+'<div class="card card-pad"><h1>专项训练需要更新</h1><p>请应用网站更新后重新打开。</p></div>';
-  const c=V.custom,options=trainingOptions(),scope=TrainingTools.scope(TRAINING_INDEX,CAT,options),plan=TrainingTools.plan(TRAINING_INDEX,CAT,options);
+  const c=V.custom,options=trainingOptions(),plan=TrainingTools.plan(TRAINING_INDEX,CAT,options),scope=plan;
+  const base=TrainingTools.scope(TRAINING_INDEX,CAT,{...options,groupFilters:{},qualifier:''});
   const years=Array.from({length:CAT.yearRange[1]-CAT.yearRange[0]+1},(_,i)=>String(CAT.yearRange[1]-i));
   const regions=[...new Set(CAT.papers.map(p=>p.region))].sort((a,b)=>a.localeCompare(b,'zh'));
   const visible=TRAINING_INDEX.groups.filter(g=>g.module===c.activeModule);
+  const current=visible.find(g=>g.id===c.activeGroup)||visible[0],filters=c.groupFilters[current.id]||{};
   const selectedGroups=TRAINING_INDEX.groups.filter(g=>g.leaves.some(t=>c.selected.has(t.id)));
-  const selectedModules=new Set(selectedGroups.map(g=>g.module));
-  const leafCounts=scope.uniqueCount;
-  const countsFor=g=>g.leaves.reduce((n,t)=>n+(scope.counts[t.id]||0),0);
+  const countsFor=(g,source=scope)=>g.leaves.reduce((n,t)=>n+(source.counts[t.id]||0),0);
+  const baseSelected=selectedGroups.reduce((n,g)=>n+g.leaves.filter(t=>c.selected.has(t.id)).reduce((sum,t)=>sum+(base.counts[t.id]||0),0),0);
+  const available=current.leaves.filter(t=>scope.counts[t.id]),all=available.length>0&&available.every(t=>c.selected.has(t.id));
+  const choices=field=>{
+    const counts=scope.facetCounts[current.id]?.[field]||{};
+    return TRAINING_INDEX.qualifiers.filter(t=>counts[t.id]||filters[field]===t.id).filter(t=>t.kind===({auxiliary:'辅助考点',method:'解题方法',form:'题面形式'}[field]));
+  };
+  const choiceLabel=(field,t)=>esc(t.label)+'（'+(scope.facetCounts[current.id]?.[field]?.[t.id]||0)+'）';
+  const formChoices=choices('form'),auxChoices=choices('auxiliary'),methodChoices=choices('method');
+  const selectedFilters=Object.entries(filters).filter(([,id])=>id).map(([field,id])=>'<button class="training-filter-chip" data-act="c-filter-remove" data-group="'+esc(current.id)+'" data-field="'+field+'" aria-label="清除'+esc(trainingFilterLabels({[field]:id})[0])+'筛选">'+esc(trainingFilterLabels({[field]:id})[0])+'<span aria-hidden="true">×</span></button>').join('');
+  const allocations=selectedGroups.map(g=>{
+    const leaves=g.leaves.filter(t=>c.selected.has(t.id)&&plan.allocations[t.id]),n=leaves.reduce((sum,t)=>sum+plan.allocations[t.id],0);
+    const whole=g.leaves.every(t=>c.selected.has(t.id)),labels=trainingFilterLabels(c.groupFilters[g.id]);
+    return '<section><div class="training-allocation-title"><b>'+esc(g.label)+'</b><b>'+n+' 题</b>'+(c.mode==='combined'?'<button class="btn btn-sm btn-ghost" data-act="ct-remove-group" data-group="'+esc(g.id)+'" aria-label="移除'+esc(g.label)+'">移除</button>':'')+'</div>'+
+      (labels.length?'<p class="training-applied">'+esc(labels.join(' · '))+'</p>':'')+
+      (whole?'<div class="training-allocation-row">全部考点</div>':leaves.map(t=>'<div class="training-allocation-row"><span>'+esc(t.label)+'</span><span>'+plan.allocations[t.id]+' 题</span></div>').join(''))+'</section>';
+  }).join('');
   return topbar('custom')+
-  '<header class="page-heading"><h1>专项训练</h1><p>按考点练习，按真题比例组卷。</p></header>'+String.raw`
+  `<header class="page-heading training-page-heading"><div><h1>专项训练</h1><p>选题型，按真题比例练习。</p></div><div class="training-mode" role="group" aria-label="练习方式"><button data-act="c-mode" data-mode="single" aria-pressed="${c.mode==='single'}">单项练习</button><button data-act="c-mode" data-mode="combined" aria-pressed="${c.mode==='combined'}">组合练习</button></div></header>`+String.raw`
   <section class="card card-pad training-scope" aria-label="真题范围">
-    <div class="training-scope-head"><h2>真题范围</h2><span>${scope.papers.length} 份回忆版 · ${leafCounts.toLocaleString()} 道去重题</span></div>
+    <div class="training-scope-head"><h2>真题范围</h2><span>${base.papers.length} 份回忆版 · ${base.uniqueCount.toLocaleString()} 道去重题</span></div>
     <div class="training-filters"><label class="training-region">地区<select data-act="cr" aria-label="专项真题地区"><option value="">全部地区</option>${regions.map(r=>'<option value="'+esc(r)+'" '+(c.region===r?'selected':'')+'>'+esc(r)+'</option>').join('')}</select></label>
     <div class="training-years" role="group" aria-label="专项真题年份">${years.map(y=>'<label class="check '+(c.years.has(y)?'on':'')+'"><input type="checkbox" data-act="cy" data-y="'+y+'" '+(c.years.has(y)?'checked':'')+'>'+y+'</label>').join('')}<span class="dim">不选则不限年份</span></div></div>
   </section>
   <div class="training-layout"><section class="card training-selector" aria-label="专项考点选择">
     <div class="training-modules" role="group" aria-label="查看模块">${CAT.modules.map(m=>'<button class="btn '+(c.activeModule===m?'btn-primary':'btn-ghost')+'" data-act="cm-view" data-m="'+esc(m)+'" aria-pressed="'+(c.activeModule===m)+'">'+esc(m)+'</button>').join('')}</div>
-    <div class="training-module-heading"><h2>${esc(c.activeModule)}</h2><div class="row"><button class="btn btn-sm" data-act="ct-module" data-m="${esc(c.activeModule)}">全选本模块</button><button class="btn btn-sm btn-ghost" data-act="ct-module-clear" data-m="${esc(c.activeModule)}">清空本模块</button></div></div>
-    <div class="training-categories">${visible.map(g=>{
-      const usable=g.leaves.filter(t=>scope.counts[t.id]),all=usable.length&&usable.every(t=>c.selected.has(t.id)),some=g.leaves.some(t=>c.selected.has(t.id));
-      return '<section class="training-category"><div class="training-category-heading"><h3>'+esc(g.label)+'</h3><span class="dim">'+countsFor(g).toLocaleString()+' 题</span><button class="btn btn-sm '+(some?'on':'btn-ghost')+'" data-act="ct-group" data-t="'+esc(g.id)+'" aria-pressed="'+!!all+'" '+(!usable.length?'disabled':'')+'>'+(all?'取消本题型':'选全部')+'</button></div><div class="training-tags">'+g.leaves.filter(t=>(scope.counts[t.id]||c.selected.has(t.id))).map(t=>'<label class="check '+(c.selected.has(t.id)?'on':'')+'"><input type="checkbox" data-act="ct" data-t="'+esc(t.id)+'" '+(c.selected.has(t.id)?'checked':'')+' '+(!scope.counts[t.id]?'disabled':'')+'><span>'+esc(t.label)+'</span><span class="n">'+(scope.counts[t.id]||0)+'</span></label>').join('')+(!usable.length?'<p class="dim">该范围暂未收录此题型。</p>':'')+'</div></section>';
-    }).join('')}</div>
-    <div class="card-pad training-filters"><label class="training-region">辅助考点 / 方法 / 题面形式<select data-act="c-qualifier" aria-label="辅助考点筛选"><option value="">不限辅助标签</option>${['辅助考点','解题方法','题面形式'].map(kind=>'<optgroup label="'+kind+'">'+(TRAINING_INDEX.qualifiers||[]).filter(t=>t.kind===kind&&(scope.qualifierCounts[t.id]||c.qualifier===t.id)).map(t=>'<option value="'+esc(t.id)+'" '+(c.qualifier===t.id?'selected':'')+'>'+esc(t.group+' · '+t.label)+'（'+(scope.qualifierCounts[t.id]||0)+'）</option>').join('')+'</optgroup>').join('')}</select></label></div>
-    <p class="training-classification-note">主考点按讲义体系整理，与 Obsidian 逐题标注一致。辅助标签进一步缩小范围；“未细分”保留待复核题。</p>
+    <div class="training-module-heading"><h2>${esc(c.activeModule)}</h2>${c.mode==='combined'?'<span class="dim">勾选考点加入组合</span>':''}</div>
+    <div class="training-group-tabs" role="group" aria-label="选择题型">${visible.map(g=>'<button class="training-group-tab" data-act="cg-view" data-group="'+esc(g.id)+'" aria-pressed="'+(g.id===current.id)+'"><span>'+esc(g.label)+'</span><span class="n">'+countsFor(g,base).toLocaleString()+'</span>'+(c.mode==='combined'&&g.leaves.some(t=>c.selected.has(t.id))?'<span class="training-group-picked">已选</span>':'')+'</button>').join('')}</div>
+    <section class="training-focus" aria-label="${esc(current.label)}考点">
+      <div class="training-focus-heading"><h3>${esc(current.label)}</h3><span>${countsFor(current).toLocaleString()} 道可选题</span></div>
+      ${(formChoices.length||auxChoices.length||methodChoices.length)?'<div class="training-refinements" aria-label="当前题型筛选">'+
+        (formChoices.length?'<div class="training-form-row"><span>题面形式</span><div role="group" aria-label="题面形式"><button class="btn btn-sm" data-act="c-form" data-id="" aria-pressed="'+!filters.form+'">不限</button>'+formChoices.map(t=>'<button class="btn btn-sm" data-act="c-form" data-id="'+esc(t.id)+'" aria-pressed="'+(filters.form===t.id)+'">'+choiceLabel('form',t)+'</button>').join('')+'</div></div>':'')+
+        '<div class="training-refinement-selects">'+[['auxiliary','辅助考点',auxChoices],['method','解题方法',methodChoices]].filter(([, ,list])=>list.length).map(([field,label,list])=>'<label><span>'+label+'</span><select data-act="c-filter" data-field="'+field+'" aria-label="'+label+'筛选"><option value="">不限'+label+'</option>'+list.map(t=>'<option value="'+esc(t.id)+'" '+(filters[field]===t.id?'selected':'')+'>'+choiceLabel(field,t)+'</option>').join('')+'</select></label>').join('')+'</div>'+
+        (selectedFilters?'<div class="training-active-filters" aria-label="已启用筛选">'+selectedFilters+'<button class="btn btn-sm btn-ghost" data-act="c-filter-clear" data-group="'+esc(current.id)+'">清除筛选</button></div>':'')+'</div>':''}
+      <div class="training-concept-heading"><b>选择考点</b><div><button class="btn btn-sm ${all?'btn-primary':''}" data-act="ct-active-all" aria-pressed="${all}">${c.mode==='combined'?'加入全部':'全选'}</button><button class="btn btn-sm btn-ghost" data-act="ct-remove-group" data-group="${esc(current.id)}">清空</button></div></div>
+      ${available.length?'<div class="training-tags">'+current.leaves.filter(t=>scope.counts[t.id]||(!all&&c.selected.has(t.id))).map(t=>'<div class="training-tag"><label class="check '+(c.selected.has(t.id)?'on':'')+'"><input type="checkbox" data-act="ct" data-t="'+esc(t.id)+'" '+(c.selected.has(t.id)?'checked':'')+'><span>'+esc(t.label)+'</span><span class="n">'+(scope.counts[t.id]||0)+'</span></label><button class="training-only" data-act="ct-only" data-t="'+esc(t.id)+'" aria-label="只练'+esc(t.label)+'" '+(!scope.counts[t.id]?'disabled':'')+'>只练</button></div>').join('')+'</div>':
+        '<div class="training-empty"><p>'+ (countsFor(current,base)?'当前筛选没有匹配的题目。':'这个年份和地区尚未收录'+esc(current.label)+'题。')+'</p>'+(selectedFilters?'<button class="btn" data-act="c-filter-clear" data-group="'+esc(current.id)+'">清除筛选，查看全部考点</button>':'<button class="btn" data-act="c-scope-reset">查看全部年份和地区</button>')+'</div>'}
+    </section>
   </section>
   <aside class="card card-pad training-preview" aria-label="本次组卷预览">
     <div class="training-preview-heading"><h2>本次练习</h2><button class="btn btn-sm btn-ghost" data-act="ct-none" ${c.selected.size?'':'disabled'}>清空选择</button></div>
+    <div class="training-result-total"><strong>${plan.total}</strong><span>题<span class="training-capacity">可抽 ${plan.max.toLocaleString()} 道不同题目</span></span></div>
     <label class="training-total">练习题量<input type="number" min="1" max="${Math.max(1,plan.max)}" value="${c.total}" data-act="ctotal" aria-label="专项练习题量"></label>
     <div class="training-presets">${[10,20,30,50].map(n=>'<button class="btn btn-sm '+(c.total===n?'btn-primary':'')+'" data-act="ctotal-set" data-n="'+n+'">'+n+' 题</button>').join('')}</div>
     <label class="check training-unseen ${c.preferUnseen?'on':''}"><input type="checkbox" data-act="c-unseen" ${c.preferUnseen?'checked':''}>优先抽未做题</label>
-    <p class="training-allocation-note">按所选年份、地区的真题收录比例分配，题库容量不足时补到其他已选考点。</p>
-    <div class="training-result-total"><strong>${plan.total}</strong><span>本次题目${selectedModules.size>1?' · '+selectedModules.size+' 个模块':''}</span></div>
-    ${plan.total<c.total&&c.selected.size?'<p class="training-shortage">所选范围最多可抽 '+plan.max+' 道不同题目。</p>':''}
-    <div class="training-allocation">${selectedGroups.map(g=>'<section><div class="training-allocation-title"><b>'+esc(g.label)+'</b><b>'+g.leaves.reduce((n,t)=>n+(plan.allocations[t.id]||0),0)+' 题</b></div>'+g.leaves.filter(t=>c.selected.has(t.id)).map(t=>'<div class="training-allocation-row"><span>'+esc(t.label)+'</span><span>'+(plan.allocations[t.id]||0)+' 题</span></div>').join('')+'</section>').join('')||'<p class="dim">选择左侧考点，可跨题型、跨模块组合。</p>'}</div>
-    <button class="btn btn-lg btn-primary training-start" data-act="start-custom" ${plan.total?'':'disabled'}>开始 ${plan.total||''}${plan.total?' 题':''}练习</button>
-    <p class="training-footer-note">同次练习不重复抽题，资料题保留完整材料。回忆版比例不代表考试固定配额。</p>
-  </aside></div>`;
+    ${plan.total<c.total&&plan.total?'<p class="training-shortage">最多可抽 '+plan.max+' 题，本次练习 '+plan.total+' 题。</p>':''}
+    <div class="training-allocation">${allocations||'<p class="dim">还没有选择考点。</p>'}</div>
+    ${!plan.total?'<div class="training-recovery"><p>'+(c.selected.size?'所选考点没有匹配题目，请放宽筛选。':'选中考点后即可开始。')+'</p><button class="btn" data-act="'+(c.selected.size?(baseSelected?'c-filter-reset-all':'c-scope-reset'):'ct-active-all')+'">'+(c.selected.size?(baseSelected?'清除筛选':'查看全部年份和地区'):'练'+esc(current.label)+'全部考点')+'</button></div>':''}
+    <button class="btn btn-lg btn-primary training-start" data-act="start-custom" ${plan.total&&!c.starting?'':'disabled'}>${c.starting?'正在准备题目…':plan.total?'开始 '+plan.total+' 题练习':'请选择考点'}</button>
+    <details class="training-help"><summary>组卷说明</summary><p>按所选年份、地区的回忆版收录比例分配；题量不足时在已选考点内补足。同次练习不重复题目，资料题保留完整材料。“未细分”包含待复核题。</p></details>
+  </aside></div><div class="training-mobile-dock"><button class="training-dock-summary" data-act="c-preview" aria-label="调整专项练习题量"><b>${plan.total} 题</b><span>调整题量</span></button><button class="btn btn-primary" data-act="start-custom" ${plan.total&&!c.starting?'':'disabled'}>${c.starting?'正在准备…':plan.total?'开始练习':'请选择考点'}</button></div>`;
 }
 /* ---------------------------------------------------------- 视图：答题 */
 
@@ -1631,7 +1683,38 @@ const ACT = {
     saveCustom(); render();
   },
   'ct-none'() { V.custom.selected.clear(); saveCustom(); render(); },
-  'cm-view'(e,el) { V.custom.activeModule=el.dataset.m; saveCustom(); render(); },
+  'cm-view'(e,el) {
+    const groups=TRAINING_INDEX.groups.filter(g=>g.module===el.dataset.m);
+    const group=groups.find(g=>g.id===V.custom.activeGroup)||groups.find(g=>g.leaves.some(t=>V.custom.selected.has(t.id)))||groups[0];
+    if(group)focusTrainingGroup(group.id);saveCustom();render();
+  },
+  'cg-view'(e,el) {focusTrainingGroup(el.dataset.group);saveCustom();render();},
+  'c-mode'(e,el) {
+    const c=V.custom;c.mode=el.dataset.mode==='combined'?'combined':'single';
+    if(c.mode==='single'){
+      const group=TRAINING_INDEX.groups.find(g=>g.id===c.activeGroup);
+      const selected=group.leaves.filter(t=>c.selected.has(t.id)).map(t=>t.id);
+      c.selected=new Set(selected.length?selected:group.leaves.map(t=>t.id));
+    }
+    saveCustom();render();
+  },
+  'ct-active-all'() {
+    const c=V.custom,group=TRAINING_INDEX.groups.find(g=>g.id===c.activeGroup);
+    if(c.mode==='single')c.selected.clear();
+    group.leaves.forEach(t=>c.selected.add(t.id));saveCustom();render();
+  },
+  'ct-only'(e,el) {V.custom.mode='single';V.custom.selected=new Set([el.dataset.t]);saveCustom();render();},
+  'c-preview'() {document.querySelector('.training-preview')?.scrollIntoView({behavior:'smooth',block:'start'});},
+  'ct-remove-group'(e,el) {
+    TRAINING_INDEX.groups.find(g=>g.id===el.dataset.group)?.leaves.forEach(t=>V.custom.selected.delete(t.id));
+    saveCustom();render();
+  },
+  'c-form'(e,el) {setTrainingFilter('form',el.dataset.id);},
+  'c-filter'(e,el) {setTrainingFilter(el.dataset.field,el.value);},
+  'c-filter-remove'(e,el) {setTrainingFilter(el.dataset.field,'',el.dataset.group);},
+  'c-filter-clear'(e,el) {delete V.custom.groupFilters[el.dataset.group];V.custom.qualifier='';saveCustom();render();},
+  'c-filter-reset-all'() {V.custom.groupFilters={};V.custom.qualifier='';saveCustom();render();},
+  'c-scope-reset'() {V.custom.region='';V.custom.years=new Set();saveCustom();render();},
   'ct-group'(e,el) {
     const group=TRAINING_INDEX.groups.find(g=>g.id===el.dataset.t);
     const available=TrainingTools.scope(TRAINING_INDEX,CAT,trainingOptions()).counts;
@@ -1658,21 +1741,31 @@ const ACT = {
   },
   async 'start-custom'() {
     if(!V.custom.selected.size)return toast('请先选择考点');
+    if(V.custom.starting)return;
+    const options={...trainingOptions(),groupFilters:structuredClone(V.custom.groupFilters)};
+    V.custom.starting=true;render();
+    let handedOff=false;
+    try{
     toast('正在抽取题目…');
-    const options=trainingOptions(),seen=new Set(getSessions().flatMap(s=>s.refs.map(r=>r.qid)));
+    const seen=new Set(getSessions().flatMap(s=>s.refs.map(r=>r.qid)));
     const sampled=TrainingTools.sample(TRAINING_INDEX,CAT,options,Date.now(),seen);
     if(!sampled.total)return toast('所选年份、地区暂未收录这些考点');
     const questions=await ensureQuestions(sampled.refs);
     if(questions.length!==sampled.refs.length)throw new Error('题目加载不完整，请联网后重试');
-    const selectedGroups=TRAINING_INDEX.groups.filter(g=>g.leaves.some(t=>V.custom.selected.has(t.id)));
-    const label=V.custom.selected.size===1?sampled.refs[0].specialty:selectedGroups.length===1?selectedGroups[0].label:[...new Set(selectedGroups.map(g=>g.module))].join('、');
-    const title=`${options.region||'全国真题'} · ${label} · ${sampled.total} 题`;
+    if(route.name!=='custom')return;
+    const selected=new Set(options.selected),selectedGroups=TRAINING_INDEX.groups.filter(g=>g.leaves.some(t=>selected.has(t.id)));
+    const label=selected.size===1?sampled.refs[0].specialty:selectedGroups.length===1?selectedGroups[0].label:[...new Set(selectedGroups.map(g=>g.module))].join('、');
+    const groupFilters=Object.fromEntries(selectedGroups.filter(g=>options.groupFilters[g.id]).map(g=>[g.id,{...options.groupFilters[g.id]}]));
+    const conditions=trainingConditions({groupFilters});
+    const title=`${options.region||'全国真题'} · ${label}${selectedGroups.length===1&&conditions.length?'（'+trainingFilterLabels(groupFilters[selectedGroups[0].id]).join('、')+'）':''} · ${sampled.total} 题`;
     startSession({
       id: newId(), kind: 'custom', title, paperId: null,
       createdAt: Date.now(), submittedAt: null,
       refs: sampled.refs, answers: {}, index: 0, submitted: false,
-      training: {region:options.region,years:options.years,selected:options.selected,qualifier:options.qualifier,taxonomyVersion:TRAINING_INDEX.taxonomyVersion,papers:sampled.papers.length,allocations:sampled.allocations,basis:'按所选回忆版真题中匹配主考点与辅助标签的出现次数分配；容量不足时在所选考点内补足'},
+      training: {mode:options.mode,region:options.region,years:options.years,selected:options.selected,qualifier:'',groupFilters,taxonomyVersion:TRAINING_INDEX.taxonomyVersion,papers:sampled.papers.length,allocations:sampled.allocations,basis:'按所选回忆版真题中匹配主考点与题型内筛选条件的出现次数分配；容量不足时在所选考点内补足'},
     });
+    handedOff=true;
+    }finally{V.custom.starting=false;if(!handedOff&&route.name==='custom')render();}
   },
 
   /* 答题：全程不提示对错，交卷后统一复盘 */
@@ -1897,8 +1990,12 @@ const ACT = {
     }
     const weak = [...agg.entries()].filter(([, v]) => v.ans >= 3).sort((a, b) => a[1].ok / a[1].ans - b[1].ok / b[1].ans).slice(0, 4).map(([t]) => t);
     if (!weak.length) return toast('还没有足够的作答记录');
-    V.custom.selected = new Set(TRAINING_INDEX.groups.filter(g=>weak.includes(g.id)).flatMap(g=>g.leaves.map(t=>t.id)));
-    V.custom.activeModule=moduleOfType(weak[0]);
+    const selected=TRAINING_INDEX.groups.flatMap(g=>g.leaves.filter(t=>weak.includes(g.id)||weak.includes(g.id+' · '+t.label)).map(t=>t.id));
+    if(!selected.length)return toast('这些历史题型暂无对应专项，请手动选择考点');
+    const group=TRAINING_INDEX.groups.find(g=>g.leaves.some(t=>selected.includes(t.id)));
+    V.custom.selected=new Set(selected);V.custom.mode='combined';
+    V.custom.activeGroup=group.id;V.custom.activeModule=group.module;
+    V.custom.groupFilters={};V.custom.qualifier='';
     V.custom.total = 30;
     saveCustom();
     go('#/custom');
@@ -2102,6 +2199,7 @@ function reportDocuments(sessions, opts) {
       summary:[`整次练习：${sum.total} 题　已答 ${sum.answered}　正确 ${sum.right}　错误 ${sum.wrong}　未答 ${sum.unanswered}`,
         `正确率：${pct(sum.right,sum.answered)}　总用时：${fmtDur(sum.totalMs)}`,
         ...(sess.training?[`专项范围：${sess.training.region||'全部地区'}；${sess.training.years.join('、')||'不限年份'}；参考 ${sess.training.papers} 份真题`]:[]),
+        ...(trainingConditions(sess.training).length?['题型筛选：'+trainingConditions(sess.training).join('；')]:[]),
         '自评与复盘描述为考生自述，请结合题目与解析分析，不能仅凭答对判断掌握。'],
       questions:exportRows(sess,qs,opts.scope).map(r=>{
         const q=r.q;if(!q)throw new Error('题目未加载：'+r.ref.qid);
@@ -2195,7 +2293,7 @@ function runAction(fn, e, el) {
 }
 
 /* 下拉框 / 复选框 / 单选 / 数字输入 */
-const CHANGE_ACTS = new Set(['pf-sel', 'cy', 'ct', 'cr', 'c-unseen', 'c-qualifier', 'set', 'hsel', 'ctotal', 'psel-type', 'psel-module', 'showall-expl', 'auto-pause']);
+const CHANGE_ACTS = new Set(['pf-sel', 'cy', 'ct', 'cr', 'c-unseen', 'c-qualifier', 'c-filter', 'set', 'hsel', 'ctotal', 'psel-type', 'psel-module', 'showall-expl', 'auto-pause']);
 document.addEventListener('change', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el || !CHANGE_ACTS.has(el.dataset.act)) return;
@@ -2292,13 +2390,11 @@ window.CloudSync?.bind({
 if (!CAT) {
   app.innerHTML = emptyBox(ExamTools.icon('file'), '数据未加载', '请先运行 node tools/build.mjs 生成 data/ 目录');
 } else {
-  if(TRAINING_INDEX&&window.TrainingTools?.migrateSelection&&SETTINGS.training?.taxonomyVersion!==TRAINING_INDEX.taxonomyVersion){
-    const migrated=TrainingTools.migrateSelection(TRAINING_INDEX,[...V.custom.selected],V.custom.qualifier);
-    V.custom.selected=new Set(migrated.selected);V.custom.qualifier=migrated.qualifier;
-    if(SETTINGS.training)saveCustom();
+  if(TRAINING_INDEX&&window.TrainingTools?.migratePreferences){
+    const migrated=TrainingTools.migratePreferences(TRAINING_INDEX,SETTINGS.training||{});
+    Object.assign(V.custom,migrated,{selected:new Set(migrated.selected)});
+    if(!SETTINGS.training?.mode||SETTINGS.training?.qualifier||SETTINGS.training?.taxonomyVersion!==TRAINING_INDEX.taxonomyVersion)saveCustom();
   }
-  // Reopening preserves the user's scope and selected tags.
-  if(!SETTINGS.training&&TRAINING_INDEX)TRAINING_INDEX.groups.filter(g=>g.module===V.custom.activeModule).flatMap(g=>g.leaves).forEach(t=>V.custom.selected.add(t.id));
   const oldSessions = getSessions();
   if (oldSessions.some(s => s.meta?.rows)) setSessions(oldSessions);
   S.session = store.get(K.active, null);

@@ -22,15 +22,28 @@
   function scope(index,catalog,options){
     const years=new Set(options.years||[]),region=options.region||'';
     const papers=catalog.papers.filter(p=>(!years.size||years.has(String(p.year)))&&(!region||p.region===region));
-    const ids=new Set(papers.map(p=>p.id)),buckets={},counts={},weights={},qualifierSets={};
+    const ids=new Set(papers.map(p=>p.id)),buckets={},counts={},weights={},qualifierSets={},facetSets={};
+    const leafGroups=new Map(index.groups.flatMap(g=>g.leaves.map(t=>[t.id,g.id])));
+    const kinds={auxiliary:'辅助考点',method:'解题方法',form:'题面形式'};
     for(const r of index.records){
       const source=r.src.filter(s=>ids.has(s[0]));if(!source.length)continue;
       for(const qualifier of r.filters||[])(qualifierSets[qualifier]||=new Set()).add(r.qid);
+      const group=leafGroups.get(r.leaf),filters=options.groupFilters?.[group]||{},labels=new Set(r.filters||[]);
+      // Facet choices count candidates with the other two conditions applied.
+      // A blank-count filter belongs to its group, never to the whole exercise.
+      for(const [field,kind] of Object.entries(kinds)){
+        if(Object.keys(kinds).some(other=>other!==field&&filters[other]&&!labels.has(filters[other])))continue;
+        for(const id of labels)if(id.startsWith(kind+'::')){
+          const choices=((facetSets[group]||={})[field]||={});(choices[id]||=new Set()).add(r.qid);
+        }
+      }
       if(options.qualifier&&!(r.filters||[]).includes(options.qualifier))continue;
+      if(Object.keys(kinds).some(field=>filters[field]&&!labels.has(filters[field])))continue;
       (buckets[r.leaf]||=[]).push({...r,src:source});weights[r.leaf]=(weights[r.leaf]||0)+source.length;
     }
     for(const [leaf,records] of Object.entries(buckets))counts[leaf]=new Set(records.map(r=>r.qid)).size;
-    return {papers,buckets,counts,weights,qualifierCounts:Object.fromEntries(Object.entries(qualifierSets).map(([k,v])=>[k,v.size])),uniqueCount:new Set(Object.values(buckets).flat().map(r=>r.qid)).size};
+    const facetCounts=Object.fromEntries(Object.entries(facetSets).map(([g,fields])=>[g,Object.fromEntries(Object.entries(fields).map(([field,choices])=>[field,Object.fromEntries(Object.entries(choices).map(([id,qs])=>[id,qs.size]))]))]));
+    return {papers,buckets,counts,weights,facetCounts,qualifierCounts:Object.fromEntries(Object.entries(qualifierSets).map(([k,v])=>[k,v.size])),uniqueCount:new Set(Object.values(buckets).flat().map(r=>r.qid)).size};
   }
   function plan(index,catalog,options){
     const info=scope(index,catalog,options),selected=new Set(options.selected||[]),ids=index.groups.flatMap(g=>g.leaves.map(t=>t.id)).filter(id=>selected.has(id));
@@ -79,5 +92,38 @@
     if(forms.length===1&&!qualifier)qualifier=index.qualifiers?.find(q=>q.kind==='题面形式'&&q.group==='逻辑填空'&&q.label===forms[0])?.id||'';
     return {selected:[...out],qualifier};
   }
-  root.TrainingTools={allocate,scope,plan,sample,migrateSelection};
+  function migratePreferences(index,prefs={}){
+    const migrated=migrateSelection(index,prefs.selected,prefs.qualifier),groups=index.groups;
+    const chosen=groups.filter(g=>g.leaves.some(t=>migrated.selected.includes(t.id)));
+    const legacy=index.qualifiers?.find(q=>q.id===migrated.qualifier);
+    const activeModule=groups.some(g=>g.module===prefs.activeModule)?prefs.activeModule:
+      chosen[0]?.module||groups.find(g=>g.id===legacy?.group)?.module||'数量关系';
+    const groupFilters={};
+    const kindFields={'辅助考点':'auxiliary','解题方法':'method','题面形式':'form'};
+    for(const group of groups){
+      const filters={};
+      for(const [field,id] of Object.entries(prefs.groupFilters?.[group.id]||{})){
+        const qualifier=index.qualifiers?.find(q=>q.id===id&&kindFields[q.kind]===field);
+        if(qualifier&&index.records.some(r=>group.leaves.some(t=>t.id===r.leaf)&&(r.filters||[]).includes(id)))filters[field]=id;
+      }
+      if(Object.keys(filters).length)groupFilters[group.id]=filters;
+    }
+    if(legacy){
+      // Old global filters migrate only to compatible groups, including methods
+      // used by several data-analysis groups. Other groups regain their questions.
+      for(const group of groups)if(index.records.some(r=>group.leaves.some(t=>t.id===r.leaf)&&(r.filters||[]).includes(legacy.id))){
+        if(group.id===legacy.group||chosen.includes(group))(groupFilters[group.id]||={})[kindFields[legacy.kind]]=legacy.id;
+      }
+    }
+    const activeGroup=groups.find(g=>g.id===prefs.activeGroup&&g.module===activeModule)||
+      groups.find(g=>g.id===legacy?.group&&g.module===activeModule)||chosen.find(g=>g.module===activeModule)||groups.find(g=>g.module===activeModule);
+    const mode=prefs.mode==='combined'||(!prefs.mode&&chosen.length>1)?'combined':'single';
+    let selected=migrated.selected;
+    if(mode==='single'){
+      selected=selected.filter(id=>activeGroup.leaves.some(t=>t.id===id));
+      if(!selected.length&&!prefs.mode)selected=activeGroup.leaves.map(t=>t.id);
+    }
+    return {mode,activeModule,activeGroup:activeGroup.id,selected,groupFilters,qualifier:''};
+  }
+  root.TrainingTools={allocate,scope,plan,sample,migrateSelection,migratePreferences};
 })(typeof window==='object'?window:globalThis);
