@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import {build} from 'esbuild';
 import {buildOffline} from './offline-build.mjs';
 import {buildTrainingIndex} from './build-training-index.mjs';
@@ -9,6 +10,14 @@ fs.rmSync(dist,{recursive:true,force:true});
 const client=path.join(root,'client');
 const unusedFonts=new Set(['assets/vendor/pdf-fonts.js','assets/vendor/pdf-fonts-lite.js','assets/vendor/pdf-font-coverage.js']);
 fs.cpSync(client,dist,{recursive:true,filter:p=>!unusedFonts.has(path.relative(client,p).replaceAll('\\','/'))});
+// Older catalogs keep their stable paper IDs and gain explicit exam metadata
+// in the published build. Questions and original taxonomy are unchanged.
+const examContext={window:{}};
+vm.runInNewContext(fs.readFileSync(path.join(dist,'assets/training-tools.js'),'utf8'),examContext);
+vm.runInNewContext(fs.readFileSync(path.join(dist,'data/catalog.js'),'utf8'),examContext);
+const catalog=examContext.window.QB_CATALOG;
+catalog.papers=catalog.papers.map(p=>({...p,...examContext.window.TrainingTools.paperExam(p)}));
+fs.writeFileSync(path.join(dist,'data/catalog.js'),'window.QB_CATALOG = '+JSON.stringify(catalog)+';\n');
 await build({entryPoints:['src/backend.js'],bundle:true,format:'iife',outfile:path.join(dist,'assets/backend.js'),minify:true,target:['es2020'],legalComments:'eof'});
 const config={url:process.env.SUPABASE_URL||'',publishableKey:process.env.SUPABASE_PUBLISHABLE_KEY||''};
 if(config.publishableKey&&!config.publishableKey.startsWith('sb_publishable_'))throw new Error('Only a browser publishable key may be shipped');

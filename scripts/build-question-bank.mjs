@@ -25,6 +25,8 @@ if (!OUT_ROOT.startsWith(ROOT + path.sep) || OUT_ROOT === SRC_ROOT) throw new Er
 const formatContext = {};
 vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'client/assets/exam-format.js'), 'utf8'), formatContext);
 const ExamFormat = formatContext.ExamFormat;
+const examContext={};
+vm.runInNewContext(fs.readFileSync(path.join(ROOT,'client/assets/training-tools.js'),'utf8'),examContext);
 const MIN_YEAR = 2022;
 const MAX_YEAR = 2026;
 
@@ -307,12 +309,16 @@ for (const p of parsed) {
       name,
       year: +(p.meta['年份'] || 0) || null,
       region: p.meta['地区'] || '',
+      examType: p.meta['考试类别'] || '',
+      examClass: p.meta['事业编类别'] || '',
       byModule: new Map(),
     });
   }
   const rec = papers.get(name);
   if (!rec.year) rec.year = +(p.meta['年份'] || 0) || null;
   if (!rec.region) rec.region = p.meta['地区'] || '';
+  if (!rec.examType) rec.examType=p.meta['考试类别']||'';
+  if (!rec.examClass) rec.examClass=p.meta['事业编类别']||'';
   const list = (rec.byModule.get(p.moduleKey) || []).concat(p.questions);
   rec.byModule.set(p.moduleKey, list);
 }
@@ -361,6 +367,7 @@ for (const rec of [...papers.values()].sort((a, b) => (b.year - a.year) || a.nam
     name: rec.name,
     year: rec.year,
     region: rec.region,
+    ...examContext.TrainingTools.paperExam(rec),
     count: questions.length,
     types,
     modules: [...new Set(questions.map((q) => q.module))],
@@ -374,6 +381,7 @@ for (const rec of [...papers.values()].sort((a, b) => (b.year - a.year) || a.nam
     name: rec.name,
     year: rec.year,
     region: rec.region,
+    ...examContext.TrainingTools.paperExam(rec),
     count: questions.length,
     types,
     modules: [...new Set(questions.map((q) => q.module))],

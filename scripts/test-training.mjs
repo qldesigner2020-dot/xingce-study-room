@@ -13,7 +13,7 @@ for(const select of appSource.matchAll(/<select\b[^>]*data-act="([^"]+)"/g)){
   assert.ok(changes.has(select[1]),`select ${select[1]} must dispatch on change`);
 }
 const statistics={CAT:cat};
-vm.runInNewContext(appSource.slice(appSource.indexOf('function refTypeLabel('),appSource.indexOf('/* ---------------------------------------------------------- 报告 / 导出 */')),statistics);
+vm.runInNewContext(appSource.slice(appSource.indexOf('function refTypeLabel('),appSource.indexOf('/** 平均每题用时：'))+'\nglobalThis.moduleForTest=moduleOfType;',statistics);
 const stats=statistics.summarize({refs:[
   {qid:'s1',type:'综合',leaf:'比重::现期比重',specialty:'现期比重'},
   {qid:'s2',type:'综合',leaf:'增长::增长率计算',specialty:'增长率计算'}],
@@ -21,6 +21,7 @@ const stats=statistics.summarize({refs:[
 assert.equal(stats.byType[0].type,'比重 · 现期比重','training results use the trained concept, preserving original type');
 assert.equal(stats.byType[1].ms,0,'unanswered dwell time does not inflate answered-question speed');
 assert.equal(stats.totalMs,120000);assert.equal(stats.answeredMs,30000);
+assert.equal(statistics.moduleForTest('比重 · 现期比重'),'资料分析','detailed concepts retain the module in reports and exports');
 const papers=new Map(cat.papers.map(p=>[p.id,read(`client/data/papers/${p.id}.js`,'QB_PAPERS')[p.id]]));
 const leaves=new Set(index.groups.flatMap(g=>g.leaves.map(t=>t.id))),sourceKeys=new Set();
 let sourceCount=0;
@@ -149,4 +150,108 @@ const first=tools.sample(index,cat,single,7),seen=new Set(first.refs.map(r=>r.qi
 const next=tools.sample(index,cat,single,8,seen),cap=tools.plan(index,cat,single).max;
 assert.equal(next.refs.filter(r=>seen.has(r.qid)).length,Math.max(0,next.total-(cap-seen.size)),'prefer unseen without changing exam proportions');
 assert.equal(tools.plan(index,cat,{...single,region:'没有这个地区'}).total,0,'empty scope never silently falls back to nationwide questions');
+// Equal parent frequencies with very different numbers of children: a flat
+// largest-remainder pass over leaves would distort the four question families.
+const examGroups=[23,5,12,8].map((n,i)=>({id:'family'+i,label:'family'+i,module:'判断',leaves:Array.from({length:n},(_,j)=>({id:'family'+i+'::'+j,label:String(j)}))}));
+const examIndex={groups:examGroups,records:examGroups.flatMap(g=>Array.from({length:120},(_,i)=>({qid:g.id+'-'+i,t:g.id,leaf:g.leaves[i%g.leaves.length].id,filters:[],src:[['exam',i+1,0,g.id+'-'+i]]})))};
+const examCatalog={papers:[{id:'exam',year:2025,region:'国考'}],modules:['判断']};
+const examOptions={workflow:'exam',selectedModules:['判断'],selected:[],total:25,years:['2025'],region:'国考'};
+const examPlan=tools.plan(examIndex,examCatalog,examOptions);
+assert.deepEqual(JSON.parse(JSON.stringify(examPlan.groupAllocations)),{family0:7,family1:6,family2:6,family3:6},'parent allocation precedes child rounding');
+assert.equal(examPlan.total,25,'automatic training needs no manual leaf selections');
+const flat=tools.plan(examIndex,examCatalog,{...examOptions,workflow:'targeted',selected:examGroups.flatMap(g=>g.leaves.map(t=>t.id))});
+assert.notDeepEqual(JSON.parse(JSON.stringify(flat.groupAllocations)),JSON.parse(JSON.stringify(examPlan.groupAllocations)),'fixture detects the previous flat allocation defect');
+for(let seed=1;seed<=12;seed++){
+  const sampled=tools.sample(examIndex,examCatalog,examOptions,seed);
+  assert.equal(sampled.total,25);assert.equal(new Set(sampled.refs.map(r=>r.qid)).size,25);
+  for(const g of examGroups)assert.equal(sampled.refs.filter(r=>r.type===g.id).length,examPlan.groupAllocations[g.id]);
+  assert.deepEqual(Array.from(new Set(sampled.refs.map(r=>r.type))),examGroups.map(g=>g.id),'question families stay together in exam order');
+}
+const constrained={...examIndex,records:examIndex.records.filter(r=>r.t!=='family0'||Number(r.qid.split('-')[1])<2)};
+const limited=tools.sample(constrained,examCatalog,examOptions,10);
+assert.equal(limited.total,25);assert.equal(limited.groupAllocations.family0,0,'a very rare type can round to zero in a small exercise; frequencies are not hardcoded');
+const limitedWeights={...examIndex,records:examIndex.records.filter(r=>r.t!=='family0'||Number(r.qid.split('-')[1])<2).map(r=>r.t==='family0'?{...r,src:Array.from({length:60},()=>r.src[0])}:r)};
+const rebalanced=tools.sample(limitedWeights,examCatalog,examOptions,10);
+assert.equal(rebalanced.groupAllocations.family0,2,'parent capacity limits redistribute within the selected module');assert.equal(rebalanced.total,25);
+const extraGroup={id:'read',module:'言语',leaves:[{id:'read::main',label:'main'}]};
+const mixedIndex={...examIndex,groups:[...examGroups,extraGroup],records:[...examIndex.records,...Array.from({length:120},(_,i)=>({qid:'read-'+i,t:'read',leaf:'read::main',src:[['exam',i+1,0,'read-'+i]]}))]};
+const mixed=tools.sample(mixedIndex,{...examCatalog,modules:['判断','言语']},{...examOptions,selectedModules:['判断','言语']},42);
+assert.deepEqual(JSON.parse(JSON.stringify(mixed.moduleAllocations)),{判断:20,言语:5},'multiple modules follow occurrence frequencies');
+assert.equal(mixed.total,25);
+const frequencies={},variants=new Set();
+for(let seed=1;seed<=400;seed++){
+  const options={...examOptions,allocationSeed:seed},p=tools.plan(examIndex,examCatalog,options),s=tools.sample(examIndex,examCatalog,options,seed+1);
+  assert.equal(p.total,25);assert.equal(s.total,p.total);
+  variants.add(JSON.stringify(p.groupAllocations));
+  for(const group of examGroups){
+    assert.ok([6,7].includes(p.groupAllocations[group.id]),'integer variation stays within floor/ceil of the real proportion');
+    assert.equal(s.refs.filter(r=>r.type===group.id).length,p.groupAllocations[group.id],'randomized preview is identical to the sampled quotas');
+  }
+  for(const [id,n] of Object.entries(p.allocations))frequencies[id]=(frequencies[id]||0)+n;
+  const capped=tools.sample(limitedWeights,examCatalog,options,seed);
+  assert.equal(capped.total,25);assert.equal(capped.groupAllocations.family0,2);
+}
+assert.ok(variants.size>1,'successive exercises have small proportional variation');
+assert.ok(examGroups[0].leaves.every(t=>frequencies[t.id]>0),'small-share child concepts are not permanently excluded by deterministic rounding');
+assert.equal(migrate({selected:[reading.leaves[0].id],qualifier:blank}).workflow,'exam','existing preferences default to the simple entry');
+assert.equal(migrate({workflow:'targeted',mode:'single',selected:[]}).workflow,'targeted');
+assert.deepEqual(migrate({workflow:'exam',selectedModules:[]}).selectedModules,[],'explicit module clear survives reload');
+assert.deepEqual(migrate({selectedModules:['不存在','判断推理','判断推理']}).selectedModules,['判断推理']);
+for(const region of ['海南','国考','安徽',''])for(const years of [['2026'],['2025','2026'],[]]){
+  const options={workflow:'exam',allocationSeed:15398271,selectedModules:['判断推理','言语理解与表达'],total:25,region,years,selected:[],preferUnseen:true,groupFilters:{逻辑填空:{form:blank}},qualifier:blank};
+  const clean=tools.plan(index,cat,{...options,groupFilters:{},qualifier:''}),plan=tools.plan(index,cat,options);
+  assert.deepEqual(JSON.parse(JSON.stringify(plan.allocations)),JSON.parse(JSON.stringify(clean.allocations)),'automatic practice ignores saved focused filters');
+  for(let seed=1;seed<=6;seed++){
+    const sample=tools.sample(index,cat,options,seed);
+    assert.equal(sample.total,plan.total);assert.equal(new Set(sample.refs.map(r=>r.qid)).size,sample.total);
+    for(const ref of sample.refs){const p=papers.get(ref.key);assert.ok(!region||region===p.region);assert.ok(!years.length||years.includes(String(p.year)));}
+    for(const leaf of plan.ids)assert.equal(sample.refs.filter(r=>r.leaf===leaf).length,plan.allocations[leaf]);
+  }
+}
+// Automatic session metadata must describe the sampled modules and quotas,
+// even when the user changes the form while questions are loading.
+let resolveAuto;const autoLoading=new Promise(resolve=>{resolveAuto=resolve;});
+custom.workflow='exam';custom.selectedModules=['判断推理'];custom.selected=new Set();custom.groupFilters={逻辑填空:{form:blank}};
+actionContext.trainingOptions=()=>({workflow:custom.workflow,selectedModules:custom.selectedModules,selected:[],total:25,years:['2025'],region:'国考'});
+actionContext.TrainingTools=tools;actionContext.ensureQuestions=()=>autoLoading;
+const autoStart=actionContext.actions['start-custom']();
+custom.selectedModules=['言语理解与表达'];custom.workflow='targeted';
+const autoRefs=tools.sample(index,cat,{workflow:'exam',selectedModules:['判断推理'],total:25,years:['2025'],region:'国考'},1).refs;
+resolveAuto(autoRefs);await autoStart;
+assert.equal(started.length,2);assert.equal(started[1].training.workflow,'exam');
+assert.deepEqual(Array.from(started[1].training.selectedModules),['判断推理']);
+assert.equal(Object.keys(started[1].training.groupFilters).length,0);
+assert.equal(Object.values(started[1].training.groupAllocations).reduce((a,b)=>a+b,0),25);
+assert.ok(started[1].title.includes('判断推理随机训练'));
+// Exam categories constrain both paper selection and every source occurrence.
+const examPapers=[
+  {id:'national',name:'2025年国家公务员录用考试',year:2025,region:'国考'},
+  {id:'provincial',name:'2025年海南公务员考试A类卷',year:2025,region:'海南'},
+  ...['A','B','C'].map(examClass=>({id:'institution'+examClass,name:'2025年事业单位职测'+examClass+'类',year:2025,region:'海南',examType:'institution',examClass})),
+  {id:'unknown',name:'2025年事业单位职测',year:2025,region:'海南'},
+];
+assert.equal(tools.paperExam(examPapers[0]).examType,'national');
+assert.equal(tools.paperExam(examPapers[1]).examType,'provincial');
+assert.equal(tools.paperExam(examPapers[1]).examClass,'','provincial A/B papers cannot become institution categories');
+assert.equal(tools.paperExam({name:'2026年事业编C类',region:'安徽'}).examClass,'C');
+assert.equal(tools.paperExam({name:'2026年职测（Ｂ类）',examType:'事业编',examClass:'Ｂ类'}).examClass,'B');
+assert.equal(tools.paperExam({name:'普通卷',examType:'institution',examClass:'A'}).examType,'institution','explicit imported metadata is authoritative');
+const categoryCatalog={modules:['判断'],papers:examPapers},categoryIndex={groups:[examGroups[0]],records:examPapers.map((p,i)=>({qid:p.id,leaf:examGroups[0].leaves[0].id,t:'family0',src:[[p.id,i+1,0,p.id]]}))};
+for(const examType of ['national','provincial','institution'])for(const examClass of ['','A','B','C']){
+  const options={...examOptions,examType,examClass,region:'',total:10};
+  const sample=tools.sample(categoryIndex,categoryCatalog,options,1);
+  const expected=examPapers.filter(p=>tools.paperMatches(p,options));
+  assert.equal(sample.total,expected.length);
+  for(const r of sample.refs){const e=tools.paperExam(examPapers.find(p=>p.id===r.key));assert.equal(e.examType,examType);if(examType==='institution'&&examClass)assert.equal(e.examClass,examClass);}
+}
+assert.equal(tools.plan(categoryIndex,categoryCatalog,{...examOptions,examType:'institution',examClass:'A',region:'国考',total:10}).total,0,'category and region intersect on the same original paper');
+assert.equal(tools.plan(index,cat,{...examOptions,selectedModules:['判断推理'],examType:'institution',region:'',examClass:'A'}).total,0,'pending institutions never borrow civil-service questions');
+const filterContext={CAT:{...categoryCatalog,typeOrder:['family0']},TrainingTools:tools,V:{paperFilter:{}}};
+vm.runInNewContext(appSource.slice(appSource.indexOf('function filteredPapers('),appSource.indexOf('function viewPapers(')),filterContext);
+const futureCatalog=filterContext.CAT;futureCatalog.papers=examPapers.map(p=>({...p,count:1,types:{family0:1}}));
+assert.deepEqual(Array.from(filterContext.filteredPapers({examType:'institution',examClass:'B',year:'2025',region:'海南',type:'family0',q:'事业',sort:'year'}),p=>p.id),['institutionB'],'paper picker applies category/class/year/region/type/search together');
+const randomAction=appSource.slice(appSource.indexOf("  async 'quiz-random-paper'() {"),appSource.indexOf('  /* 卷详情页：勾选'));
+let selectedRoute='';const randomContext={filteredPapers:()=>futureCatalog.papers.filter(p=>p.id==='institutionC'),go:url=>{selectedRoute=url;},toast:()=>{}};
+vm.runInNewContext('globalThis.actions={'+randomAction+'}',randomContext);await randomContext.actions['quiz-random-paper']();
+assert.equal(selectedRoute,'#/paper/institutionC','random whole-paper choice respects the active filtered list');
 console.log(`PASS specialist training: ${sourceCount} exact sources, ${leaves.size} tags, weighted allocation/capacity, year-region intersection, no repeated qids, preview accuracy, source labels and unseen preference.`);
