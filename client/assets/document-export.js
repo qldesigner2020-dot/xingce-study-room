@@ -30,7 +30,7 @@
           (r.reflection?'<div class="personal"><h3>我的复盘描述</h3><p>'+esc(r.reflection)+'</p></div>':'')+
           (r.explanation?'<div class="explanation"><h3>参考解析</h3>'+embed(r.explanation,images)+'</div>':'')+'</section>':'';
         const meta=[q.specialty?'专项考点：'+q.specialty:'',q.source?'真题来源：'+q.source:''].filter(Boolean);
-        return heading+mat+'<article class="question">'+(meta.length?'<p class="self-assessment">'+meta.map(esc).join('<br>')+'</p>':'')+'<div class="stem"><b class="number">'+(i+1)+'.</b><div>'+embed(q.stem,images)+'</div></div>'+opts+review+'</article>';
+        return heading+mat+'<article class="question">'+(meta.length?'<p class="self-assessment">'+meta.map(esc).join('<br>')+'</p>':'')+'<div class="stem">'+(q.original?'':'<b class="number">'+(i+1)+'.</b>')+'<div>'+embed(q.stem,images)+'</div></div>'+opts+review+'</article>';
       }).join('');
       return '<section class="document'+(di?' next-document':'')+'"><h1>'+esc(doc.title)+'</h1>'+
         '<div class="sheet-info">'+(doc.report?'<span>复盘报告 · '+doc.questions.length+' 题</span><span>'+esc(doc.date||'')+'</span>':'<span>共 '+doc.questions.length+' 题</span><span>姓名：____________</span><span>日期：____________</span>')+'</div>'+
@@ -239,7 +239,7 @@
         const estimatedHeight=Math.ceil(plain(q.stem).length/38)*20+imageHeight;
         // Keep the source and concept with the stem across page breaks.
         content.push({stack:[...meta.map(text=>({text,style:'selfAssessment'})),
-          {columns:[{width:24,text:(i+1)+'.',bold:true},{width:'*',stack:stemBlocks}]}],
+          ...(q.original?stemBlocks:[{columns:[{width:24,text:(i+1)+'.',bold:true},{width:'*',stack:stemBlocks}]}])],
           unbreakable:estimatedHeight+meta.length*30<620,margin:[0,10,0,4]});
         if(!imageOptions(q))for(const o of q.options)content.push({columns:[{width:22,text:o.k+'.',bold:true},{width:'*',stack:blocks(o.t)}],margin:[24,3,0,3]});
         const r=q.result;

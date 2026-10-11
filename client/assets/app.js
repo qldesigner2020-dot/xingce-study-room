@@ -203,6 +203,9 @@ const setWrong = (w) => store.set(K.wrong, w);
 /* 收藏属于题目；复盘自评属于本次作答，两者不共用“待复查”标记。 */
 const getFavorites = () => store.get(K.favorites, {});
 function questionKey(q) {
+  // Original crops have no HTML text and some OCR options are empty. Keep
+  // their stable source IDs so unrelated image questions never share a favorite.
+  if(q.original)return 'original:'+q.qid;
   const normalize = h => stripTags(h).normalize('NFKC').replace(/\s+/g, '');
   const text = [normalize(q.material), normalize(q.stem), ...q.options.map(o => o.k + normalize(o.t))].join('\u001f');
   let h1 = 2166136261, h2 = 5381;
@@ -216,12 +219,12 @@ function assessment(a, correct) {
   const review = a.review || {};
   const familiarity = FAMILIARITY[review.familiarity] || '未标注';
   const confidence = CONFIDENCE[review.confidence] || '未标注';
-  let interpretation = !a.pick ? '未作答' : !correct ? '答错，需复盘' :
+  let interpretation = !a.pick ? '未作答' : correct == null ? '参考答案缺失，待核对' : !correct ? '答错，需复盘' :
     review.familiarity === 'remember' ? '记得答案，独立解题能力待验证' :
     review.confidence === 'guess' ? '蒙对，掌握程度待验证' :
     review.confidence === 'hesitant' ? '答对但有犹豫，需巩固' :
     review.confidence === 'clear' ? '答对且自评思路清楚' : '答对但未自评，不能据此认定掌握';
-  if (a.pick && !correct && review.confidence === 'guess') interpretation = '蒙错，需巩固';
+  if (a.pick && correct === false && review.confidence === 'guess') interpretation = '蒙错，需巩固';
   return {familiarity,confidence,interpretation};
 }
 function needsConsolidation(r) {
@@ -238,7 +241,7 @@ function reviewControls(sess, ref, a, compact = false) {
   const reflection = `<label class="reflection-field"><span>我的复盘描述</span><textarea rows="3" data-act="review-description" data-sid="${esc(sess.id)}" data-qid="${esc(ref.qid)}" placeholder="记录当时的思路、犹豫点，或对答案的疑问……">${esc(a.reflection || '')}</textarea></label>`;
   const body = group('familiarity','是否做过',FAMILIARITY) + group('confidence','本次把握',confidence);
   return compact ? `<details class="assessment compact" data-assessment><summary>作答自评</summary>${body}</details>` :
-    `<section class="assessment" data-assessment>${body}<p class="assessment-status">${esc(assessment(a,!!a.pick && a.pick === QMAP.get(ref.qid)?.answer).interpretation)}</p>${reflection}<span class="reflection-save" role="status">自动保存 · 导出时附上</span></section>`;
+    `<section class="assessment" data-assessment>${body}<p class="assessment-status">${esc(assessment(a,gradeAnswer(QMAP.get(ref.qid),a)).interpretation)}</p>${reflection}<span class="reflection-save" role="status">自动保存 · 导出时附上</span></section>`;
 }
 
 function saveReflection(sid, qid, value) {
@@ -339,23 +342,27 @@ function syncClock() {
 function refTypeLabel(ref) {
   return ref.specialty ? (ref.leaf?.split('::')[0] || ref.type || '未分类') + ' · ' + ref.specialty : ref.type || '未分类';
 }
+function gradeAnswer(q,a) {return q?.answer ? !!a?.pick && a.pick===q.answer : null;}
 function summarize(sess, questions) {
   const qByQid = new Map(questions.map((q) => [q.qid, q]));
   const rows = sess.refs.map((ref) => {
     const q = qByQid.get(ref.qid);
     const a = sess.answers[ref.qid] || {};
-    const correct = !!(a.pick && q && a.pick === q.answer);
-    return { ref, q, a, correct, answered: !!a.pick };
+    const correct = gradeAnswer(q,a);
+    return { ref, q, a, correct, answered: !!a.pick, gradeable:correct!==null };
   });
   const answered = rows.filter((r) => r.answered);
+  const graded = answered.filter(r=>r.gradeable);
   const right = rows.filter((r) => r.correct);
   const byType = new Map();
   for (const r of rows) {
     const t = refTypeLabel(r.ref);
-    if (!byType.has(t)) byType.set(t, { type: t, n: 0, ans: 0, ok: 0, ms: 0 });
+    if (!byType.has(t)) byType.set(t, { type: t, n: 0, ans: 0, graded:0, pending:0, ok: 0, ms: 0 });
     const b = byType.get(t);
     b.n++;
     if (r.answered) b.ans++;
+    if (r.answered && r.gradeable) b.graded++;
+    if (r.answered && !r.gradeable) b.pending++;
     if (r.correct) b.ok++;
     if (r.answered) b.ms += r.a.ms || 0;
   }
@@ -366,8 +373,10 @@ function summarize(sess, questions) {
     answered: answered.length,
     unanswered: rows.length - answered.length,
     right: right.length,
-    wrong: answered.length - right.length,
-    accuracy: answered.length ? right.length / answered.length : 0,
+    graded:graded.length,
+    pending:answered.length-graded.length,
+    wrong: graded.length - right.length,
+    accuracy: graded.length ? right.length / graded.length : 0,
     totalMs: rows.reduce((s, r) => s + (r.a.ms || 0), 0),
     answeredMs: answered.reduce((s, r) => s + (r.a.ms || 0), 0),
     byType: types.map((t) => byType.get(t)),
@@ -383,7 +392,7 @@ const avgSec = (ms, n) => (n ? fmtSec(ms / n) : '—');
 
 function exportRows(sess, questions, scope) {
   const { rows } = summarize(sess, questions);
-  if (scope === 'wrong') return rows.filter((r) => r.answered && !r.correct);
+  if (scope === 'wrong') return rows.filter((r) => r.answered && r.correct===false);
   if (scope === 'unanswered') return rows.filter((r) => !r.answered);
   if (scope === 'wrong+unanswered') return rows.filter((r) => !r.correct);
   if (scope === 'consolidate') return rows.filter(needsConsolidation);
@@ -403,7 +412,12 @@ const stripTags = (h) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-const questionExcerpt = q => stripTags(q.stem).replace(/!\[[^\]]*\]\([^)]+\)/g, '〔图片〕').slice(0,110);
+const questionExcerpt = q => stripTags(q.sourceText?.stem || q.stem).replace(/!\[[^\]]*\]\([^)]+\)/g, '〔图片〕').slice(0,110);
+const optionText=(q,o)=>q.original?'选项 '+o.k:o.t;
+function sourceTranscript(q) {
+  if(!q.sourceText)return '';
+  return `<details class="source-transcript"><summary>查看题目文字</summary><p>文字由原件提取，图表与公式以原图为准。</p>${q.sourceText.material?'<p>'+esc(q.sourceText.material)+'</p>':''}<p>${esc(q.sourceText.stem)}</p>${q.sourceText.options.map(o=>'<div class="t">'+o.k+'. '+esc(o.t)+'</div>').join('')}</details>`;
+}
 
 function htmlToMd(html, indent = '') {
   // 保留段落结构，图片转 Markdown 语法
@@ -444,7 +458,7 @@ function buildMarkdown(sessions, opts = {}) {
     out.push('|---|---|---|---|---|---|---|---|---|---|');
     sessions.forEach((s, i) => {
       const m = s.meta || {};
-      out.push(`| ${i + 1} | ${fmtTime(s.submittedAt || s.createdAt)} | ${s.kind === 'paper' ? '套卷' : s.kind === 'wrong' ? '错题重刷' : '随机'} | ${s.title} | ${m.total} | ${m.answered} | ${m.right} | ${m.wrong} | ${pct(m.right, m.answered)} | ${fmtDur(m.totalMs)} |`);
+      out.push(`| ${i + 1} | ${fmtTime(s.submittedAt || s.createdAt)} | ${s.kind === 'paper' ? '套卷' : s.kind === 'wrong' ? '错题重刷' : '随机'} | ${s.title} | ${m.total} | ${m.answered} | ${m.right} | ${m.wrong} | ${pct(m.right, m.graded ?? m.answered)} | ${fmtDur(m.totalMs)} |`);
     });
     out.push('');
     // 题型维度跨会话
@@ -452,7 +466,7 @@ function buildMarkdown(sessions, opts = {}) {
     for (const s of sessions) for (const t of s.meta?.byType || []) {
       if (!agg.has(t.type)) agg.set(t.type, { type: t.type, n: 0, ans: 0, ok: 0, ms: 0 });
       const b = agg.get(t.type);
-      b.n += t.n; b.ans += t.ans; b.ok += t.ok; b.ms += t.ms;
+      b.n += t.n; b.ans += t.ans; b.graded = (b.graded || 0) + (t.graded ?? t.ans); b.pending = (b.pending || 0) + (t.pending || 0); b.ok += t.ok; b.ms += t.ms;
     }
     if (agg.size) {
       out.push('## 跨练习·分题型汇总');
@@ -461,7 +475,7 @@ function buildMarkdown(sessions, opts = {}) {
       out.push('|---|---|---|---|---|---|---|---|');
       for (const t of CAT.typeOrder.filter((x) => agg.has(x))) {
         const b = agg.get(t);
-        out.push(`| ${b.type} | ${moduleOfType(b.type)} | ${b.n} | ${b.ans} | ${b.ok} | ${b.ans - b.ok} | ${pct(b.ok, b.ans)} | ${avgSec(b.ms, b.ans)} |`);
+        out.push(`| ${b.type} | ${moduleOfType(b.type)} | ${b.n} | ${b.ans} | ${b.ok} | ${(b.graded ?? b.ans) - b.ok} | ${pct(b.ok, b.graded ?? b.ans)} | ${avgSec(b.ms, b.ans)} |`);
       }
       out.push('');
     }
@@ -476,7 +490,7 @@ function buildMarkdown(sessions, opts = {}) {
     out.push('');
     out.push(`- 时间：${fmtTime(sess.createdAt)} → ${fmtTime(sess.submittedAt || Date.now())}`);
     out.push(`- 题量：${m.total}　作答：${m.answered}　未答：${m.unanswered}`);
-    out.push(`- 正确：${m.right}　错误：${m.wrong}　正确率：${pct(m.right, m.answered)}（按已作答计）`);
+    out.push(`- 正确：${m.right}　错误：${m.wrong}　正确率：${pct(m.right, m.graded ?? m.answered)}（按已答且有参考答案计）`);
     out.push(`- 答题总用时：${fmtDur(m.totalMs)}　已答题平均用时：${avgSec(m.answeredMs, m.answered)}`);
     if(sess.training){
       out.push(`- 专项范围：${sess.training.region||'全部地区'}；${sess.training.years.length?sess.training.years.join('、'):'不限年份'}；参考 ${sess.training.papers} 份真题`, `- 组卷依据：${sess.training.basis}`);
@@ -492,7 +506,7 @@ function buildMarkdown(sessions, opts = {}) {
     out.push('| 题型 | 所属模块 | 题量 | 作答 | 正确 | 错误 | 正确率 | 平均用时 |');
     out.push('|---|---|---|---|---|---|---|---|');
     for (const t of m.byType || []) {
-      out.push(`| ${t.type} | ${moduleOfType(t.type)} | ${t.n} | ${t.ans} | ${t.ok} | ${t.ans - t.ok} | ${pct(t.ok, t.ans)} | ${avgSec(t.ms, t.ans)} |`);
+      out.push(`| ${t.type} | ${moduleOfType(t.type)} | ${t.n} | ${t.ans} | ${t.ok} | ${(t.graded ?? t.ans) - t.ok} | ${pct(t.ok, t.graded ?? t.ans)} | ${avgSec(t.ms, t.ans)} |`);
     }
     out.push('');
 
@@ -503,7 +517,7 @@ function buildMarkdown(sessions, opts = {}) {
     if (!rows.length) out.push('_（无）_');
     rows.forEach((r, i) => {
       const q = r.q;
-      out.push(`### ${i + 1}. ${r.ref.type || '未分类'} · 模块第 ${r.ref.no} 题　\`qid ${r.ref.qid}\``);
+      out.push(`### ${i + 1}. ${r.ref.type || '未分类'} · ${q?.original?'原卷':'模块'}第 ${r.ref.no} 题　\`qid ${r.ref.qid}\``);
       out.push('');
       if(q?.classification){const c=q.classification;out.push(`**主考点**：${c.group} / ${c.tag}`,`**辅助考点**：${c.auxiliary.join('、')||'未标注'}`,`**解题方法**：${c.methods.join('、')||'未标注'}`,`**题面形式**：${c.forms.join('、')||'未标注'}`,`**分类依据**：${c.basis}；${c.confidence}；版本 ${c.version}`,'');}
       else if(r.ref.specialty)out.push(`**专项考点**：${r.ref.specialty}（历史分类）`, '');
@@ -518,6 +532,7 @@ function buildMarkdown(sessions, opts = {}) {
       out.push('');
       out.push(q ? htmlToMd(q.stem) : '_（题目内容未能加载）_');
       out.push('');
+      if(q?.sourceText){out.push('**提取文字（图表与公式以原图为准）**','',q.sourceText.stem,'');if(material&&q.sourceText.material)out.push('**材料提取文字**','',q.sourceText.material,'');}
       if (q) {
         out.push('**选项**');
         out.push('');
@@ -529,8 +544,8 @@ function buildMarkdown(sessions, opts = {}) {
       out.push(`**是否做过**：${review.familiarity}　**本次把握**：${review.confidence}`, '');
       out.push(`**复盘提示**：${review.interpretation}　**收藏**：${isFavorite(q) ? '是' : '否'}　**待复查标记**：${a.flagged ? '是' : '否'}`, '');
       const mine = a.pick || '（未作答）';
-      const mark = !a.pick ? '⬜未答' : r.correct ? '✅' : '❌';
-      out.push(`**我的答案**：${mine} ${mark}　**正确答案**：${q ? q.answer : '?'}　**用时**：${fmtSec(a.ms)}`);
+      const mark = !a.pick ? '未答' : !r.gradeable ? '待核对' : r.correct ? '答对' : '答错';
+      out.push(`**我的答案**：${mine} ${mark}　**正确答案**：${q?.answer || '原件缺失，待核对'}　**用时**：${fmtSec(a.ms)}`);
       out.push('');
       if (a.excluded) out.push(`**曾排除选项**：${a.excluded}`, '');
       if (a.note) out.push('**我的草稿 / 思路**', '', a.note, '');
@@ -540,6 +555,7 @@ function buildMarkdown(sessions, opts = {}) {
         out.push('');
         out.push(htmlToMd(q.explanation, '> ') || '> ');
         out.push('');
+        if(q.sourceText?.explanation)out.push('**解析提取文字（以原图为准）**','',q.sourceText.explanation,'');
       }
       out.push('---');
       out.push('');
@@ -571,8 +587,11 @@ function buildJson(sessions, opts = {}) {
         classification: r.q?.classification || r.ref.classification,
         module: r.ref.module,
         no: r.ref.no,
-        stem: r.q ? stripTags(r.q.stem) : null,
-        material: opts.material && r.q?.material ? stripTags(r.q.material) : undefined,
+        stem: r.q ? r.q.sourceText?.stem || stripTags(r.q.stem) : null,
+        originalHtml: r.q?.original ? {stem:r.q.stem,material:opts.material?r.q.material:undefined,explanation:opts.expl?r.q.explanation:undefined} : undefined,
+        source: r.q?.from,
+        answerStatus: r.q?.answerStatus,
+        material: opts.material && r.q?.material ? r.q.sourceText?.material || stripTags(r.q.material) : undefined,
         options: r.q ? r.q.options.map((o) => ({ key: o.k, text: stripTags(o.t) })) : [],
         myAnswer: r.a.pick || null,
         correctAnswer: r.q ? r.q.answer : null,
@@ -587,7 +606,7 @@ function buildJson(sessions, opts = {}) {
         needsConsolidation: needsConsolidation(r),
         favorite: isFavorite(r.q),
         flaggedForReview: !!r.a.flagged,
-        explanation: opts.expl && r.q ? stripTags(r.q.explanation) : undefined,
+        explanation: opts.expl && r.q ? r.q.sourceText?.explanation || stripTags(r.q.explanation) : undefined,
       })),
     })),
   };
@@ -733,7 +752,7 @@ function viewHome() {
   const storedActive = store.get(K.active, null);
   const active = storedActive && !sessions.some(s => s.id === storedActive.id) ? storedActive : null;
   const wrongN = Object.keys(getWrong()).length;
-  const answered = sessions.reduce((n,s) => n + (s.meta?.answered || 0), 0);
+  const answered = sessions.reduce((n,s) => n + (s.meta?.graded ?? s.meta?.answered ?? 0), 0);
   const right = sessions.reduce((n,s) => n + (s.meta?.right || 0), 0);
   return `${topbar('home')}
   <main class="home-workspace">
@@ -747,7 +766,7 @@ function viewHome() {
       <a class="practice-side" href="#/wrong"><div><h2>错题复习</h2><p>${wrongN ? wrongN + ' 道错题，等待重新掌握。' : '把每一次失误变成进步。'}</p></div><span class="entry-action">打开错题本</span></a>
     </section>
     <section class="recent-section"><div class="section-heading"><h2>最近练习</h2><a href="#/history">全部记录</a></div>
-      ${sessions.length ? `<div class="recent-list">${sessions.slice(0,4).map(s => `<a class="recent-row" href="#/report/${s.id}"><div><b title="${esc(s.title)}">${esc(displayTitle(s.title))}</b><span>${fmtTime(s.submittedAt || s.createdAt)} · ${s.meta?.total ?? s.refs.length} 题</span></div><strong>${pct(s.meta?.right,s.meta?.answered)}</strong><span class="recent-duration">${fmtDur(s.meta?.totalMs)}</span></a>`).join('')}</div>` : '<div class="recent-empty">完成一次练习后，成绩会保存在这里。</div>'}
+      ${sessions.length ? `<div class="recent-list">${sessions.slice(0,4).map(s => `<a class="recent-row" href="#/report/${s.id}"><div><b title="${esc(s.title)}">${esc(displayTitle(s.title))}</b><span>${fmtTime(s.submittedAt || s.createdAt)} · ${s.meta?.total ?? s.refs.length} 题</span></div><strong>${pct(s.meta?.right,s.meta?.graded ?? s.meta?.answered)}</strong><span class="recent-duration">${fmtDur(s.meta?.totalMs)}</span></a>`).join('')}</div>` : '<div class="recent-empty">完成一次练习后，成绩会保存在这里。</div>'}
     </section>
     <footer class="workspace-footer"><span>${CAT.modules.map(esc).join(' · ')}</span><span>${CAT.totalQuestions.toLocaleString()} 道真题</span></footer>
     ${!storageOK ? '<div class="card card-pad">本地存储不可用，刷新会丢失记录。请用「启动.cmd」打开。</div>' : ''}
@@ -787,7 +806,7 @@ function filteredPapers(f=V.paperFilter) {
     list = list.filter((p) => p.name.toLowerCase().includes(kw));
   }
   if (f.sort === 'count') list.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'));
-  else list.sort((a, b) => (b.year - a.year) || a.name.localeCompare(b.name, 'zh'));
+  else list.sort((a, b) => (b.year - a.year) || String(b.examDate || '').localeCompare(String(a.examDate || '')) || a.name.localeCompare(b.name, 'zh'));
   return list;
 }
 function viewPapers() {
@@ -811,10 +830,8 @@ function viewPapers() {
         <span class="chip">收录 ${p.count} 题</span>
         ${p.coverage?.missingCount ? `<span class="chip">原库尚缺 ${p.coverage.missingCount} 题</span>` : ''}
       </div>
-      <div class="modstart">
-        ${mods.map((x) => `<button class="btn btn-sm" data-act="start-paper-module" data-id="${p.id}" data-m="${esc(x.m)}" title="只做本卷的${esc(x.m)}">${esc(x.m)} <b>${x.n}</b></button>`).join('')}
-        <button class="btn btn-sm" data-act="open-paper" data-id="${p.id}">自选题型</button>
-      </div>
+      <p class="muted">${mods.map(x=>esc(x.m)).join(' · ')}</p>
+      <button class="btn btn-sm" data-act="open-paper" data-id="${p.id}">选择练习</button>
     </div>`;
   }).join('');
 
@@ -829,10 +846,6 @@ function viewPapers() {
           <option value="">全部地区</option>
           ${regions.map((r) => `<option value="${esc(r)}" ${f.region === r ? 'selected' : ''}>${esc(r)}</option>`).join('')}
         </select>`}
-        <select data-act="pf-sel" data-k="type">
-          <option value="">全部题型</option>
-          ${CAT.typeOrder.map((t) => `<option value="${esc(t)}" ${f.type === t ? 'selected' : ''}>${esc(t)}（${CAT.typeCount[t]}）</option>`).join('')}
-        </select>
         <select data-act="pf-sel" data-k="sort">
           <option value="year" ${f.sort === 'year' ? 'selected' : ''}>按年份</option>
           <option value="count" ${f.sort === 'count' ? 'selected' : ''}>按题量</option>
@@ -867,62 +880,41 @@ async function viewPaper(pid) {
 
   const moduleBlock = mods.map(({ m, n }) => {
     const types = CAT.typeOrder.filter((t) => pf.types[t] && moduleOfType(t) === m);
-    const chosen = types.filter((t) => sel.has(t));
-    const modOn = chosen.length === types.length && types.length > 0;
-    return `<div class="pickmod ${modOn ? 'on' : ''}">
-      <div class="pickmod-h">
-        <label class="check ${modOn ? 'on' : ''}" style="padding-left:4px">
-          <input type="checkbox" data-act="psel-module" data-id="${pid}" data-m="${esc(m)}" ${modOn ? 'checked' : ''}>
-          <b>${esc(m)}</b>
-        </label>
-        <span class="chip">已选 ${chosen.reduce((s, t) => s + pf.types[t], 0)} / ${n} 题</span>
-        <div class="right row">
-          <button class="btn btn-sm btn-ghost" data-act="psel-module-only" data-id="${pid}" data-m="${esc(m)}">只做这个模块</button>
-        </div>
-      </div>
-      <div class="row" style="margin-top:4px">
-        ${types.map((t) => `<label class="check ${sel.has(t) ? 'on' : ''}">
-          <input type="checkbox" data-act="psel-type" data-id="${pid}" data-t="${esc(t)}" ${sel.has(t) ? 'checked' : ''}>
-          ${esc(t)} <span class="n">${pf.types[t]}</span></label>`).join('')}
-      </div>
-    </div>`;
+    const modOn = chosenCount !== pf.count && types.length > 0 && types.every(t=>sel.has(t));
+    return `<button class="paper-module ${modOn?'on':''}" data-act="psel-module-toggle" data-id="${pid}" data-m="${esc(m)}" aria-pressed="${modOn}"><b>${esc(m)}</b><span>${n} 题</span></button>`;
   }).join('');
 
   return `${topbar('papers')}
   <div class="crumb"><a href="#/papers">套卷刷题</a><span>/</span><span class="muted">卷目详情</span></div>
 
-  <div class="card card-pad">
-    <h1 style="font-size:19px">${esc(pf.name)}</h1>
+  <div class="card card-pad paper-intro">
+    <h1>${esc(displayTitle(pf.name))}</h1>
     <div class="row" style="margin-top:12px">
-      <span class="chip acc">${pf.year}</span>
+      <span class="chip acc">${esc(TrainingTools.examLabel(pf.examType,pf.examClass))}</span>
       ${pf.region ? `<span class="chip">${esc(pf.region)}</span>` : ''}
       <span class="chip">收录 ${pf.count}${pf.coverage?.expectedCount ? ` / ${pf.coverage.expectedCount}` : ''} 题</span>
     </div>
     <p class="muted" style="margin:12px 0 0">${pf.coverage?.missingCount
       ? `原始回忆版题库尚缺 ${pf.coverage.missingCount} 题，本站已导入原库中本卷的全部现有题目。`
-      : '已导入原库中本卷的全部现有题目。网友回忆版可能有遗漏。'}</p>
+      : pf.examType==='institution'?'按所给原件收录，保留原题顺序与图片。':'已导入原库中本卷的全部现有题目。网友回忆版可能有遗漏。'}${pf.coverage?.missingAnswers?` 本卷 ${pf.coverage.missingAnswers} 道缺参考答案，作答后待核对。`:''}</p>
   </div>
 
-  <div class="card">
-    <div class="card-head">
-      <h3>选择练习内容</h3>
-      <div class="spacer"></div>
-      <button class="btn btn-sm" data-act="psel-all" data-id="${pid}">全选</button>
-      <button class="btn btn-sm" data-act="psel-none" data-id="${pid}">清空</button>
+  <div class="card card-pad paper-selection">
+    <div class="paper-selection-heading"><h2>练整卷，或选几个模块</h2><p>模块可加选，题目保留本卷顺序。</p></div>
+    <div class="paper-module-grid" role="group" aria-label="练习范围">
+      <button class="paper-module paper-whole ${chosenCount===pf.count?'on':''}" data-act="psel-all" data-id="${pid}" aria-pressed="${chosenCount===pf.count}"><b>整张试卷</b><span>${pf.count} 题</span></button>
+      ${moduleBlock}
     </div>
-    <div class="card-pad col" style="gap:12px">${moduleBlock}</div>
   </div>
 
-  <div class="card card-pad startbar">
+  <div class="card card-pad startbar paper-startbar">
     <div>
       <div style="font-weight:600">已选 <span class="bigcount">${chosenCount}</span> 题${chosenCount !== pf.count ? `<span class="muted small">（本卷收录 ${pf.count} 题）</span>` : ''}</div>
     </div>
     <div class="right row">
-      ${mods.map(({ m }) => `<button class="btn btn-sm" data-act="psel-module-only" data-id="${pid}" data-m="${esc(m)}">只做${esc(m)}</button>`).join('')}
-      <button class="btn" data-act="print-questions" data-source="paper" data-id="${pid}" ${chosenCount ? '' : 'disabled'}>打印试题</button>
-      <button class="btn" data-act="download-questions" data-source="paper" data-id="${pid}" ${chosenCount ? '' : 'disabled'}>导出打印版</button>
-      <button class="btn" data-act="download-question-pdf" data-source="paper" data-id="${pid}" ${chosenCount ? '' : 'disabled'}>下载试题 PDF</button>
-      <button class="btn btn-lg btn-primary" data-act="start-paper-part" data-id="${pid}" ${chosenCount ? '' : 'disabled'}>开始刷题</button>
+      <button class="btn" data-act="print-questions" data-source="paper" data-id="${pid}" ${chosenCount ? '' : 'disabled'}>打印</button>
+      <button class="btn" data-act="download-question-pdf" data-source="paper" data-id="${pid}" ${chosenCount ? '' : 'disabled'}>下载 PDF</button>
+      <button class="btn btn-lg btn-primary" data-act="start-paper-part" data-id="${pid}" ${chosenCount ? '' : 'disabled'}>开始练习</button>
     </div>
   </div>
 
@@ -1082,7 +1074,7 @@ function renderQuestion(q, ref, a) {
     const sel = pick.includes(o.k);
     const excluded = (a.excluded || '').includes(o.k);
     return `<div class="opt ${sel ? 'sel' : ''} ${excluded ? 'excluded' : ''}" data-act="pick" data-k="${o.k}" tabindex="0" role="checkbox" aria-checked="${sel}" aria-label="选项 ${o.k}${excluded ? '，已排除' : ''}">
-      <div class="k">${o.k}</div><div class="t" data-mark-zone="opt-${o.k}">${o.t}</div>
+      <div class="k">${o.k}</div><div class="t" data-mark-zone="opt-${o.k}">${optionText(q,o)}</div>
       <button class="exclude-btn" data-act="exclude" data-k="${o.k}" aria-label="${excluded ? '恢复' : '排除'}选项 ${o.k}" aria-pressed="${excluded}" title="${excluded ? '恢复选项' : '划线排除（Shift+' + o.k + '）'}">${excluded ? '恢复' : '排除'}</button></div>`;
   }).join('');
 
@@ -1093,7 +1085,7 @@ function renderQuestion(q, ref, a) {
   return `
   <div class="qmeta">
     <span class="chip acc">${esc(refTypeLabel(ref))}</span>
-    <span class="chip" title="源题库按模块重新编号">模块第 ${ref.no} 题</span>
+    <span class="chip" title="${q.original?'原试卷题号':'源题库按模块重新编号'}">${q.original?'原卷':'模块'}第 ${ref.no} 题</span>
     ${isMulti ? '<span class="chip warn">多选</span>' : ''}
     ${q.judge ? '<span class="chip">判断</span>' : ''}
     <div class="right row"><button class="btn btn-sm ${a.flagged ? 'btn-primary' : ''}" data-act="flag" aria-pressed="${!!a.flagged}">${a.flagged ? '已标记' : '标记'}</button>${favoriteButton(q, ref)}</div>
@@ -1101,6 +1093,7 @@ function renderQuestion(q, ref, a) {
   <div class="stem" data-mark-zone="stem">${ExamFormat.stem(q.stem, q.type)}</div>
   ${figureButton(q)}
   <div class="opts">${optHtml}</div>
+  ${sourceTranscript(q)}
   ${reviewControls(S.session, ref, a, true)}
   ${multiHint}`;
 }
@@ -1109,14 +1102,14 @@ function renderAnswerSheet(sess) {
   return sess.refs.map((r, idx) => {
     const a = sess.answers[r.qid] || {};
     const cls = [a.pick ? 'done' : '', idx === sess.index ? 'cur' : '', a.flagged ? 'flagged' : ''].filter(Boolean).join(' ');
-    return `<button class="${cls}" data-act="jump" data-i="${idx}" ${idx === sess.index ? 'aria-current="step"' : ''} aria-label="练习第 ${idx + 1} 题，${a.pick ? '已答' : '未答'}${a.flagged ? '，待复查' : ''}" title="${esc(r.type)} · 模块第 ${r.no} 题">${idx + 1}</button>`;
+    return `<button class="${cls}" data-act="jump" data-i="${idx}" ${idx === sess.index ? 'aria-current="step"' : ''} aria-label="练习第 ${idx + 1} 题，${a.pick ? '已答' : '未答'}${a.flagged ? '，待复查' : ''}" title="${esc(r.type)} · ${QMAP.get(r.qid)?.original?'原卷':'模块'}第 ${r.no} 题">${idx + 1}</button>`;
   }).join('');
 }
 
 function questionFigures(q) {
   const photos = [];
   for (const [label, html] of [['材料', q.material], ['题干', q.stem], ...q.options.map(o => ['选项 ' + o.k, o.t])]) {
-    for (const m of String(html || '').matchAll(/<img\b[^>]*\bsrc=["'](assets\/img\/timu\/[^"']+)["'][^>]*>/g)) {
+    for (const m of String(html || '').matchAll(/<img\b[^>]*\bsrc=["'](assets\/img\/(?:timu|institution)\/[^"']+)["'][^>]*>/g)) {
       if (!photos.some(p => p.src === m[1])) photos.push({label, src:m[1]});
     }
   }
@@ -1218,25 +1211,25 @@ async function viewReport(sid, opts = {}) {
   const rows = exportRows(sess, qs, scope);
 
   const typeTable = `<table class="tbl performance-table">
-    <thead><tr><th>题型</th><th class="num">正确 / 已答</th><th class="num">未答</th><th class="num">正确率</th><th class="num">平均用时</th></tr></thead>
+    <thead><tr><th>题型</th><th class="num">正确 / 可计分</th><th class="num">未答</th><th class="num">正确率</th><th class="num">平均用时</th></tr></thead>
     <tbody>${sum.byType.map((t) => `<tr>
       <td title="${esc(moduleOfType(t.type))}">${esc(t.type)}</td>
-      <td class="num">${t.ok} / ${t.ans}</td><td class="num">${t.n - t.ans}</td>
-      <td class="num" style="color:${t.ans && t.ok / t.ans < .7 ? 'var(--bad)' : 'var(--text)'}">${pct(t.ok, t.ans)}</td>
+      <td class="num">${t.ok} / ${t.graded ?? t.ans}</td><td class="num">${t.n - t.ans}</td>
+      <td class="num" style="color:${t.ans && t.ok / (t.graded ?? t.ans) < .7 ? 'var(--bad)' : 'var(--text)'}">${pct(t.ok, t.graded ?? t.ans)}</td>
       <td class="num muted">${avgSec(t.ms, t.ans)}</td></tr>`).join('')}</tbody>
-    <tfoot><tr><td>合计</td><td class="num">${sum.right} / ${sum.answered}</td>
-      <td class="num">${sum.unanswered}</td><td class="num">${pct(sum.right, sum.answered)}</td>
+    <tfoot><tr><td>合计</td><td class="num">${sum.right} / ${sum.graded}</td>
+      <td class="num">${sum.unanswered}</td><td class="num">${pct(sum.right, sum.graded)}</td>
       <td class="num">${avgSec(sum.answeredMs, sum.answered)}</td></tr></tfoot>
   </table>`;
 
   const rowHtml = (r) => {
     const q = r.q;
     const a = r.a;
-    const stateChip = !a.pick ? '<span class="chip">未答</span>' : r.correct ? '<span class="chip ok">正确</span>' : '<span class="chip bad">错误</span>';
+    const stateChip = !a.pick ? '<span class="chip">未答</span>' : !r.gradeable ? '<span class="chip">待核对</span>' : r.correct ? '<span class="chip ok">正确</span>' : '<span class="chip bad">错误</span>';
     return `<details class="qitem review-item">
       <summary class="review-summary">
         <span class="review-heading">
-          <span class="review-identity"><b class="review-number" title="源题库模块内题号">模块第 ${r.ref.no} 题</b><span class="review-time">用时 <b>${fmtDur(a.ms)}</b></span></span>
+          <span class="review-identity"><b class="review-number" title="${q?.original?'原试卷题号':'源题库模块内题号'}">${q?.original?'原卷':'模块'}第 ${r.ref.no} 题</b><span class="review-time">用时 <b>${fmtDur(a.ms)}</b></span></span>
           <span class="review-result">${stateChip}</span>
           <span class="review-toggle"><span class="when-closed">展开</span><span class="when-open">收起</span></span>
         </span>
@@ -1253,11 +1246,12 @@ async function viewReport(sid, opts = {}) {
         <div class="opts">${q ? q.options.map((o) => {
           const isAns = q.answer.includes(o.k);
           const isMine = (a.pick || '').includes(o.k);
-          const cls = isAns ? 'locked correct' : isMine ? 'locked wrong' : 'locked';
-          return `<div class="opt ${cls}"><div class="k">${o.k}</div><div class="t" data-mark-zone="opt-${o.k}">${o.t}</div>${(a.excluded || '').includes(o.k) ? '<span class="tiny muted">曾排除</span>' : ''}</div>`;
+          const cls = isAns ? 'locked correct' : isMine ? r.gradeable?'locked wrong':'locked sel' : 'locked';
+          return `<div class="opt ${cls}"><div class="k">${o.k}</div><div class="t" data-mark-zone="opt-${o.k}">${optionText(q,o)}</div>${(a.excluded || '').includes(o.k) ? '<span class="tiny muted">曾排除</span>' : ''}</div>`;
         }).join('') : ''}</div>
-        <div class="verdict ${r.correct ? 'ok' : 'bad'}" style="margin-top:12px">
-          我的答案：<b>${a.pick || '未作答'}</b>　正确答案：<b>${q ? q.answer : '?'}</b>　用时：<b>${fmtSec(a.ms)}</b>
+        ${q?sourceTranscript(q):''}
+        <div class="verdict ${!r.gradeable?'':r.correct ? 'ok' : 'bad'}" style="margin-top:12px">
+          我的答案：<b>${a.pick || '未作答'}</b>　参考答案：<b>${q?.answer || '原件缺失，待核对'}</b>　用时：<b>${fmtSec(a.ms)}</b>
         </div>
         ${a.note ? `<div class="review-note"><b>我的草稿 / 思路</b><p>${esc(a.note)}</p></div>` : ''}
         ${reviewControls(sess, r.ref, a)}
@@ -1279,7 +1273,7 @@ async function viewReport(sid, opts = {}) {
     return order.map((t) => {
       const rs = groups.get(t);
       const ok = rs.filter((r) => r.correct).length;
-      const bad = rs.filter((r) => r.answered && !r.correct).length;
+      const bad = rs.filter((r) => r.answered && r.correct===false).length;
       const un = rs.filter((r) => !r.answered).length;
       const open = order.length === 1 || bad + un > 0 && rs.length <= 40;
       return `<details class="qgroup" ${open ? 'open' : ''}>
@@ -1304,7 +1298,6 @@ async function viewReport(sid, opts = {}) {
       <button class="btn btn-ghost" data-act="download-pdf" data-id="${sess.id}">下载复盘 PDF</button>
       <button class="btn btn-ghost" data-act="print-export" data-id="${sess.id}">打印复盘报告</button>
       <button class="btn btn-ghost" data-act="print-questions" data-source="report" data-id="${sess.id}">打印空白试题</button>
-      <button class="btn btn-ghost" data-act="download-questions" data-source="report" data-id="${sess.id}">导出空白打印版</button>
       <button class="btn btn-ghost" data-act="download-question-pdf" data-source="report" data-id="${sess.id}">下载空白试题 PDF</button>
       <button class="btn btn-ghost" data-act="download-html" data-id="${sess.id}">带图网页（单文件）</button>
       <button class="btn btn-ghost" data-act="export-md" data-id="${sess.id}">复制 Markdown 文字</button>
@@ -1317,8 +1310,8 @@ async function viewReport(sid, opts = {}) {
       <button class="btn btn-ghost btn-danger" data-act="del-session" data-id="${sess.id}">删除记录</button></div></details>
   </header>
   <section class="result-overview">
-    <div class="result-accuracy"><span>正确率</span><div><b>${sum.answered ? Math.round(sum.right / sum.answered * 100) : '—'}</b>${sum.answered ? '<span>%</span>' : ''}</div></div>
-    <div class="result-breakdown"><div class="result-counts"><div><b>${sum.right}</b><span>正确</span></div><div class="error-count"><b>${sum.wrong}</b><span>错误</span></div><div><b>${sum.unanswered}</b><span>未答</span></div></div>
+    <div class="result-accuracy"><span>正确率</span><div><b>${sum.graded ? Math.round(sum.right / sum.graded * 100) : '—'}</b>${sum.graded ? '<span>%</span>' : ''}</div></div>
+    <div class="result-breakdown"><div class="result-counts"><div><b>${sum.right}</b><span>正确</span></div><div class="error-count"><b>${sum.wrong}</b><span>错误</span></div><div><b>${sum.unanswered}</b><span>未答</span></div>${sum.pending?`<div><b>${sum.pending}</b><span>待核对</span></div>`:''}</div>
       <div class="result-bar" aria-label="正确 ${sum.right}，错误 ${sum.wrong}，未答 ${sum.unanswered}"><i class="right-part" style="width:${sum.right / (sum.total || 1) * 100}%"></i><i class="wrong-part" style="width:${sum.wrong / (sum.total || 1) * 100}%"></i></div>
     </div>
     <div class="result-time"><div><span>总用时</span><b>${fmtDur(sum.totalMs)}</b></div><div><span>已答题平均</span><b>${avgSec(sum.answeredMs, sum.answered)}</b></div></div>
@@ -1355,13 +1348,13 @@ function viewHistory() {
   for (const s of sessions) for (const t of s.meta?.byType || []) {
     if (!agg.has(t.type)) agg.set(t.type, { type: t.type, n: 0, ans: 0, ok: 0, ms: 0 });
     const b = agg.get(t.type);
-    b.n += t.n; b.ans += t.ans; b.ok += t.ok; b.ms += t.ms;
+    b.n += t.n; b.ans += t.ans; b.graded = (b.graded || 0) + (t.graded ?? t.ans); b.pending = (b.pending || 0) + (t.pending || 0); b.ok += t.ok; b.ms += t.ms;
   }
-  const weak = [...agg.values()].filter((t) => t.ans >= 3).sort((a, b) => a.ok / a.ans - b.ok / b.ans).slice(0, 5);
+  const weak = [...agg.values()].filter((t) => (t.graded ?? t.ans) >= 3).sort((a, b) => a.ok / (a.graded ?? a.ans) - b.ok / (b.graded ?? b.ans)).slice(0, 5);
 
   const totalQ = sessions.reduce((s, x) => s + (x.meta?.total || 0), 0);
   const totalOk = sessions.reduce((s, x) => s + (x.meta?.right || 0), 0);
-  const totalAns = sessions.reduce((s, x) => s + (x.meta?.answered || 0), 0);
+  const totalAns = sessions.reduce((s, x) => s + (x.meta?.graded ?? x.meta?.answered ?? 0), 0);
 
   const sel = V.historySel;
   return `${topbar('history')}
@@ -1385,7 +1378,7 @@ function viewHistory() {
       <thead><tr><th>题型</th><th>所属模块</th><th class="num">作答</th><th class="num">正确</th><th class="num">正确率</th></tr></thead>
       <tbody>${weak.map((t) => `<tr><td>${esc(t.type)}</td><td class="dim small">${esc(moduleOfType(t.type))}</td>
         <td class="num">${t.ans}</td><td class="num">${t.ok}</td>
-        <td class="num" style="color:${t.ok / t.ans >= 0.7 ? 'var(--ok)' : 'var(--bad)'}"><b>${pct(t.ok, t.ans)}</b></td></tr>`).join('')}</tbody>
+        <td class="num" style="color:${t.ok / (t.graded ?? t.ans) >= 0.7 ? 'var(--ok)' : 'var(--bad)'}"><b>${pct(t.ok, t.graded ?? t.ans)}</b></td></tr>`).join('')}</tbody>
     </table>
   </div>` : ''}
 
@@ -1413,7 +1406,7 @@ function viewHistory() {
           <td class="num">${m.total ?? s.refs.length}</td>
           <td class="num">${m.answered ?? '—'}</td>
           <td class="num" style="color:var(--ok)">${m.right ?? '—'}</td>
-          <td class="num"><b>${pct(m.right, m.answered)}</b></td>
+          <td class="num"><b>${pct(m.right, m.graded ?? m.answered)}</b></td>
           <td class="num muted">${fmtDur(m.totalMs)}</td>
           <td class="num nowrap"><a href="#/report/${s.id}">查看</a></td>
         </tr>`;
@@ -1421,7 +1414,7 @@ function viewHistory() {
     </table>
     <div class="mobile-history">${sessions.map(s => {
       const m = s.meta || {};
-      return `<article class="history-record"><div class="history-record-head"><label class="history-record-select"><input type="checkbox" data-act="hsel" data-id="${esc(s.id)}" ${sel.has(s.id) ? 'checked' : ''} aria-label="选择练习：${esc(displayTitle(s.title))}"></label><a href="#/report/${s.id}"><b>${esc(displayTitle(s.title))}</b><span>${fmtTime(s.submittedAt || s.createdAt)}</span></a></div><a class="history-record-stats" href="#/report/${s.id}"><div><b>${pct(m.right,m.answered)}</b><span>正确率</span></div><div><b>${m.answered ?? 0}/${m.total ?? s.refs.length}</b><span>作答</span></div><div><b>${fmtDur(m.totalMs)}</b><span>用时</span></div></a></article>`;
+      return `<article class="history-record"><div class="history-record-head"><label class="history-record-select"><input type="checkbox" data-act="hsel" data-id="${esc(s.id)}" ${sel.has(s.id) ? 'checked' : ''} aria-label="选择练习：${esc(displayTitle(s.title))}"></label><a href="#/report/${s.id}"><b>${esc(displayTitle(s.title))}</b><span>${fmtTime(s.submittedAt || s.createdAt)}</span></a></div><a class="history-record-stats" href="#/report/${s.id}"><div><b>${pct(m.right,m.graded ?? m.answered)}</b><span>正确率</span></div><div><b>${m.answered ?? 0}/${m.total ?? s.refs.length}</b><span>作答</span></div><div><b>${fmtDur(m.totalMs)}</b><span>用时</span></div></a></article>`;
     }).join('')}</div>
     <div class="card-pad row">
       <button class="btn btn-sm btn-ghost btn-danger" data-act="clear-sessions">清空全部记录</button>
@@ -1465,9 +1458,10 @@ async function viewWrong() {
         ${figureButton(q)}
         <div class="opts">${q.options.map((o) => {
           const isAns = q.answer.includes(o.k);
-          return `<div class="opt locked ${isAns ? 'correct' : ''}"><div class="k">${o.k}</div><div class="t">${o.t}</div></div>`;
+          return `<div class="opt locked ${isAns ? 'correct' : ''}"><div class="k">${o.k}</div><div class="t">${optionText(q,o)}</div></div>`;
         }).join('')}</div>
-        <div class="verdict ok" style="margin-top:12px">正确答案：<b>${q.answer}</b></div>
+        ${sourceTranscript(q)}
+        <div class="verdict ok" style="margin-top:12px">正确答案：<b>${q.answer || '原件缺失，待核对'}</b></div>
         ${q.explanation ? `<details class="expl-toggle"><summary>查看参考解析</summary><div class="expl">${q.explanation}</div></details>` : ''}
       </div>
     </details>`;
@@ -1513,12 +1507,12 @@ async function viewFavorites() {
   const items = all.filter(v => !filter || v.ref.type === filter);
   await ensureQuestions(items.map(v => v.ref));
   const types = [...new Set(all.map(v => v.ref.type))];
-  return `${topbar('favorites')}<header class="page-heading"><h1>收藏题</h1><p>保存有价值的题目，集中重刷。相同题面、材料和选项只收藏一次。</p></header>
+  return `${topbar('favorites')}<header class="page-heading"><h1>收藏题</h1><p>保存有价值的题目，集中重刷。</p></header>
     <div class="card card-pad"><div class="row"><b>共 ${items.length} 题</b><div class="right"><button class="btn btn-primary" data-act="retry-favorites" ${!items.length ? 'disabled' : ''}>练习这些收藏题</button></div></div>
     <div class="favorite-filters row">${['',...types].map(t => `<button class="btn btn-sm ${filter === t ? 'btn-primary' : ''}" data-act="favorite-filter" data-type="${esc(t)}">${t || '全部'}</button>`).join('')}</div></div>
     <div class="card">${items.length ? items.map(v => {
       const q=QMAP.get(v.ref.qid); if(!q)return '';
-      return `<details class="qitem"><summary><span class="chip">${esc(v.ref.type)}</span><span class="qt">${esc(questionExcerpt(q))}</span></summary><div class="detail"><div class="row"><span class="muted">模块第 ${v.ref.no} 题</span><div class="right">${favoriteButton(q,v.ref)}</div></div>${q.material ? `<div class="mat">${q.material}</div>` : ''}<div class="stem">${ExamFormat.stem(q.stem,q.type)}</div>${figureButton(q)}<div class="opts">${q.options.map(o=>`<div class="opt locked"><div class="k">${o.k}</div><div class="t">${o.t}</div></div>`).join('')}</div><details class="expl-toggle"><summary>查看答案与解析</summary><b>答案：${q.answer}</b><div class="expl">${q.explanation || ''}</div></details></div></details>`;
+      return `<details class="qitem"><summary><span class="chip">${esc(v.ref.type)}</span><span class="qt">${esc(questionExcerpt(q))}</span></summary><div class="detail"><div class="row"><span class="muted">${q.original?'原卷':'模块'}第 ${v.ref.no} 题</span><div class="right">${favoriteButton(q,v.ref)}</div></div>${q.material ? `<div class="mat">${q.material}</div>` : ''}<div class="stem">${ExamFormat.stem(q.stem,q.type)}</div>${figureButton(q)}<div class="opts">${q.options.map(o=>`<div class="opt locked"><div class="k">${o.k}</div><div class="t">${optionText(q,o)}</div></div>`).join('')}</div>${sourceTranscript(q)}<details class="expl-toggle"><summary>查看答案与解析</summary><b>答案：${q.answer || '原件缺失，待核对'}</b><div class="expl">${q.explanation || ''}</div></details></div></details>`;
     }).join('') : emptyBox('', '还没有收藏题', '答题或复盘时点击「收藏」，这里就能找到。')}</div>`;
 }
 
@@ -1638,7 +1632,7 @@ const ACT = {
       const on=a.review[field]===btn.dataset.value;btn.classList.toggle('btn-primary',on);btn.setAttribute('aria-pressed',String(on));
     }
     const status=el.closest('[data-assessment]').querySelector('.assessment-status');
-    if(status)status.textContent=assessment(a,!!a.pick && a.pick===QMAP.get(qid)?.answer).interpretation;
+    if(status)status.textContent=assessment(a,gradeAnswer(QMAP.get(qid),a)).interpretation;
   },
   /* 首页 */
   resume() {
@@ -1671,6 +1665,15 @@ const ACT = {
   },
 
   /* 卷详情页：勾选要做哪些题型 / 模块 */
+  'psel-module-toggle'(e,el) {
+    const meta=paperById.get(el.dataset.id),sel=V.paperSel[el.dataset.id];
+    if(!meta||!sel)return;
+    const types=CAT.typeOrder.filter(t=>meta.types[t]&&moduleOfType(t)===el.dataset.m);
+    if(!types.length)return;
+    if(Object.keys(meta.types).every(t=>sel.has(t)))V.paperSel[meta.id]=new Set(types);
+    else {const on=types.every(t=>sel.has(t));types.forEach(t=>on?sel.delete(t):sel.add(t));}
+    render();
+  },
   'psel-type'(e, el) {
     const sel = V.paperSel[el.dataset.id];
     if (!sel) return;
@@ -1718,7 +1721,7 @@ const ACT = {
     for (const q of pf.questions) QMAP.set(q.qid, q);
     const sel = V.paperSel[pid] || new Set(Object.keys(pf.types));
     const refs = pf.questions.filter((q) => sel.has(q.type)).map((q) => makeRef(q, 'p', pf.id));
-    if (!refs.length) return toast('请先勾选要做的题型');
+    if (!refs.length) return toast('请先选择模块或整张试卷');
 
     const mods = [...new Set(refs.map((r) => r.module))];
     const parts = [];
@@ -1938,7 +1941,7 @@ const ACT = {
     const qByQid = new Map(qs.map((q) => [q.qid, q]));
     for (const r of sess.refs) {
       const a = sess.answers[r.qid];
-      if (a?.pick && qByQid.has(r.qid) && a.pick !== qByQid.get(r.qid).answer) {
+      if (a?.pick && gradeAnswer(qByQid.get(r.qid),a)===false) {
         const e = wb[r.qid] || { n: 0, last: 0, ref: r };
         e.n++; e.last = Date.now(); e.ref = r;
         wb[r.qid] = e;
@@ -2122,7 +2125,7 @@ const ACT = {
         for (const o of q.options) lines.push(`- ${o.k}. ${htmlToMd(o.t).replace(/\n+/g, ' ')}`);
         lines.push('', `**正确答案**：${q.answer}`, '');
         const latest = getSessions().find(s => s.answers[qid]?.pick)?.answers[qid];
-        const review = assessment(latest || {}, !!latest?.pick && latest.pick === q.answer);
+        const review = assessment(latest || {}, gradeAnswer(q,latest));
         lines.push(`**最近一次自评**：${review.familiarity}；${review.confidence}；${review.interpretation}`, '');
         lines.push(`**收藏**：${isFavorite(q) ? '是' : '否'}`, '');
         if (SETTINGS.exportExpl && q.explanation) lines.push('**参考解析**', '', htmlToMd(q.explanation, '> '), '');
@@ -2269,15 +2272,16 @@ async function doExport(ids, kind, how) {
 
 /* 空白试卷只投影材料、题干与选项，不向文档传递答案或作答记录。 */
 function printableQuestion(q, type) {
-  return {type:type || q.type || '未分类', material:q.material || '',
-    stem:ExamFormat.stem(q.stem, type || q.type), options:q.options.map(o => ({k:o.k, t:o.t}))};
+  return {type:type || q.type || '未分类', original:!!q.original, material:q.material || '',
+    stem:ExamFormat.stem(q.stem, type || q.type), options:q.original?[]:q.options.map(o => ({k:o.k, t:o.t}))};
 }
 function reportDocuments(sessions, opts) {
   return sessions.map(sess=>{
     const qs=sess.__questions||[],sum=summarize(sess,qs);
     return {title:sess.title,report:true,date:fmtTime(sess.submittedAt||sess.createdAt),
       summary:[`整次练习：${sum.total} 题　已答 ${sum.answered}　正确 ${sum.right}　错误 ${sum.wrong}　未答 ${sum.unanswered}`,
-        `正确率：${pct(sum.right,sum.answered)}　总用时：${fmtDur(sum.totalMs)}`,
+        `正确率：${pct(sum.right,sum.graded)}（已答且有参考答案）　总用时：${fmtDur(sum.totalMs)}`,
+        ...(sum.pending?[`待核对 ${sum.pending} 题：原件未提供参考答案，不计入正确率及错题本。`]:[]),
         ...(sess.training?[`专项范围：${sess.training.region||'全部地区'}；${sess.training.years.join('、')||'不限年份'}；参考 ${sess.training.papers} 份真题`]:[]),
         ...(sess.training?.examType?['考试类别：'+TrainingTools.examLabel(sess.training.examType,sess.training.examClass)]:[]),
         ...(trainingConditions(sess.training).length?['题型筛选：'+trainingConditions(sess.training).join('；')]:[]),
@@ -2290,8 +2294,8 @@ function reportDocuments(sessions, opts) {
         const c=q.classification;
         const concept=c?[c.group+' / '+c.tag,c.auxiliary.length?'辅助：'+c.auxiliary.join('、'):'',c.methods.length?'方法：'+c.methods.join('、'):'','分类：'+c.confidence].filter(Boolean).join('；'):r.ref.specialty||'';
         return {...printableQuestion(q,r.ref.module || r.ref.type),specialty:concept,
-          source:q.from?.file?`${q.from.file} · 模块第 ${r.ref.no} 题`:'',material:opts.material?q.material||'':'',
-          result:{state:!a.pick?'未作答':r.correct?'答对':'答错',mine:a.pick||'未作答',answer:q.answer,time:fmtDur(a.ms),
+          source:q.from?.file?`${q.from.file} · ${q.original?'原卷':'模块'}第 ${r.ref.no} 题`:'',material:opts.material?q.material||'':'',
+          result:{state:!a.pick?'未作答':!r.gradeable?'待核对':r.correct?'答对':'答错',mine:a.pick||'未作答',answer:q.answer||'原件缺失，待核对',time:fmtDur(a.ms),
             ...review,note:a.note||'',reflection:a.reflection||'',excluded:a.excluded||'',
             favorite:isFavorite(q),flagged:!!a.flagged,explanation:opts.expl?q.explanation||'':''}};
       })};
@@ -2311,7 +2315,7 @@ async function exportQuestions(source, id, preview, format='html') {
     const pf = await loadPaper(id);
     const sel = V.paperSel[id] || new Set(Object.keys(pf.types));
     title = pf.name;
-    questions = pf.questions.filter(q => sel.has(q.type)).map(q => printableQuestion(q));
+    questions = pf.questions.filter(q => sel.has(q.type)).map(q => printableQuestion(q,q.module));
   } else {
     const [sess] = await prepareForExport(await pickSessions([id]));
     if (!sess) throw new Error('练习记录不存在');

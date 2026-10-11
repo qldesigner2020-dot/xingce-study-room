@@ -1,5 +1,6 @@
 import {classify as legacy} from './training-taxonomy-v1.mjs';
 export const VERSION='fenbi-v2.20261011';
+export const INSTITUTION_VERSION='shiye-v1.20261011';
 export const SUBTYPES={
   '新思想':['思想导论与两个结合','新时代与社会主要矛盾','中国式现代化','以人民为中心与共同富裕','经济高质量发展','民主政治','文化建设','民生与社会治理','生态文明','现代化国家战略','全面深化改革','全面依法治国','全面从严治党','国家安全','国防与军队','一国两制与祖国统一','外交与人类命运共同体','综合考查','未细分'],
   '马克思主义':['马克思主义总述','唯物论','唯物辩证法','认识论','唯物史观','商品经济与价值规律','货币','剩余价值与资本积累','资本主义经济危机','科学社会主义','综合考查','未细分'],
@@ -14,6 +15,9 @@ export const SUBTYPES={
   '逻辑判断':['翻译推理','组合排列','日常结论','加强论证','削弱论证','前提假设','原因解释','未细分'],
   '增长':['基期量','现期量','增长量计算','增长量比较','年均增长量','增长率计算','增长率比较','间隔增长率','年均增长率','混合增长率','未细分'],
   '比重':['现期比重','基期比重','两期比重','未细分'],'平均数':['现期平均数','基期平均数','平均数增长率','两期平均数','未细分'],'倍数':['现期倍数','基期倍数','未细分'],'综合':['综合判断','直接查找','其他计算','未细分'],
+  '政治常识':['未细分'],'常识时政':['时事政治'],'常识判断':['未细分'],'资料分析':['未细分'],
+  '综合分析':['材料细节判断','词句理解','材料主旨','未细分'],
+  '实验设计':['实验方案','实验分析','对照实验','实验结论','未细分'],'策略选择':['方案与策略','未细分'],
 };
 export const text=h=>String(h||'').replace(/<\/(?:p|div)>|<br\s*\/?>/gi,'\n').replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&gt;/g,'>').replace(/&lt;/g,'<').replace(/&amp;/g,'&').replace(/[\t \u3000]+/g,' ').trim();
 const flat=h=>text(h).replace(/\s+/g,' ');
@@ -35,7 +39,7 @@ const methods=[[/截位直除|截位法/,'截位直除'],[/分数比较|分数�
 const mechanism=[[/否定论点/,'否定论点'],[/否定论据/,'否定论据'],[/拆桥|断开.{0,10}(?:联系|关系)/,'拆桥'],[/搭桥|建立.{0,10}(?:联系|关系)/,'搭桥'],[/因果倒置/,'因果倒置'],[/他因削弱|另有他因/,'他因削弱'],[/补充论据/,'补充论据'],[/必要条件/,'必要条件']];
 
 export function classify(q,{ignorePersisted=false}={}){
-  if(!ignorePersisted&&q.classification?.version===VERSION)return q.classification;
+  if(!ignorePersisted&&[VERSION,INSTITUTION_VERSION].includes(q.classification?.version))return q.classification;
   const stem=text(q.stem),s=flat(stem),e=text(q.explanation);
   const prompt=stem.split('\n').filter(x=>x.trim()).at(-1)?.slice(-200)||s.slice(-160);
   const intro=e.split(/第二步|[A-D](?:项|选项)|选项[A-D]/)[0].slice(0,1400);

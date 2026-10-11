@@ -10,7 +10,7 @@ function read(rel, global, key) {
   return key ? context.window[global][key] : context.window[global];
 }
 const cat = read('data/catalog.js', 'QB_CATALOG');
-assert.deepEqual(Array.from(cat.modules), ['政治理论', '常识判断', '言语理解与表达', '数量关系', '判断推理', '资料分析']);
+assert.deepEqual(Array.from(cat.modules), ['政治理论', '常识判断', '言语理解与表达', '数量关系', '判断推理', '资料分析', '综合分析']);
 const papers = new Map(), images = new Set(), types = {}, modules = {};
 let total = 0;
 for (const entry of cat.papers) {
@@ -23,7 +23,8 @@ for (const entry of cat.papers) {
   const actualModules = {}, actualTypes = {};
   for (const q of paper.questions) {
     assert.equal(q.pid, paper.id);
-    assert.ok(q.stem && q.options.length >= 2 && q.answer, `complete question ${q.qid}`);
+    assert.ok(q.stem && q.options.length >= 2 && (q.answer || q.answerStatus==='missing'), `complete question ${q.qid}`);
+    if(!q.answer)assert.equal(q.answerStatus,'missing','unknown answers must be explicit');
     assert.equal(cat.typeModule[q.type], q.module, `type mapping ${q.type}`);
     assert.ok(q.from.file.endsWith('.md') && q.from.module === q.module);
     if (q.module === '资料分析') assert.ok(q.material, `material retained for ${q.qid}`);
@@ -54,6 +55,33 @@ for (const [id, n] of [['p06c861deb9', 130], ['p58c22f871b', 135], ['pe73c52b327
   assert.equal(papers.get(id)?.count, n, `regression in ${id}`);
 }
 assert.equal(papers.get('p259967259c').coverage.missingCount, 1);
+const civil=[...papers.values()].filter(p=>p.examType!=='institution');
+assert.equal(civil.length,194,'retain all existing civil-service papers');
+assert.equal(civil.reduce((n,p)=>n+p.count,0),22298,'retain every existing civil-service source question');
+const institution=[...papers.values()].filter(p=>p.examType==='institution');
+assert.equal(institution.length,29);assert.equal(institution.reduce((n,p)=>n+p.count,0),2900);
+const classCounts={A:0,B:0,C:0},institutionIds=new Set(),missing=[];
+for(const p of institution){
+  classCounts[p.examClass]++;assert.equal(p.count,100);
+  assert.deepEqual(Array.from(p.questions,q=>q.no),Array.from({length:100},(_,i)=>i+1),'original source order 1–100');
+  assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(p.examDate));
+  assert.equal(p.coverage.basis,'所给事业编原件');
+  for(const q of p.questions){
+    assert.ok(!institutionIds.has(q.qid));institutionIds.add(q.qid);
+    assert.equal(q.classification.version,'shiye-v1.20261011');
+    assert.ok(q.original&&typeof q.sourceText.stem==='string'&&q.sourceText.options.length===4,'searchable source text when extraction succeeds; original image always retained');
+    if(q.type==='数学运算')assert.ok(!q.material,'shared data passages must not be misclassified as math');
+    assert.match(q.stem,/assets\/img\/institution\//,'every question has original figures and options');
+    assert.equal(q.from.questionPages.length>0,true,'source page traceability');
+    if(!q.answer)missing.push(q.qid);
+    if(['综合分析','实验设计','策略选择'].includes(q.type))assert.ok(q.material,'special institution passage retained');
+  }
+}
+assert.deepEqual(classCounts,{A:10,B:9,C:10});
+assert.deepEqual(missing.sort(),['sy-b-20220521-040','sy-b-20241102-013']);
+const institutionImages=[...images].filter(p=>p.startsWith('assets/img/institution/'));
+assert.equal(institutionImages.length,7474,'referenced originals retained; six redundant passage crops replaced with six verified crops');
+assert.equal(institutionImages.filter(p=>p.includes('材料-核对补齐')).length,6,'all six corrected passage crops are included');
 const pools = read('data/pools/index.js', 'QB_POOL_INDEX');
 let poolQuestions = 0;
 for (const [type, entry] of Object.entries(pools)) {

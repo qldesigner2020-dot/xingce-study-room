@@ -3,7 +3,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import {fileURLToPath} from 'node:url';
 import crypto from 'node:crypto';
-import {VERSION,SUBTYPES,LEGACY_LEAVES,classify} from './training-taxonomy.mjs';
+import {VERSION,INSTITUTION_VERSION,SUBTYPES,LEGACY_LEAVES,classify,trainingGroup} from './training-taxonomy.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 export function buildTrainingIndex(client=path.join(root,'client')) {
   const read=(rel,name,key)=>{const c={window:{}};vm.runInNewContext(fs.readFileSync(path.join(client,rel),'utf8'),c);return key?c.window[name][key]:c.window[name];};
@@ -14,8 +14,9 @@ export function buildTrainingIndex(client=path.join(root,'client')) {
   const qualifiers=new Map();
   for(const p of cat.papers)for(const q of read(`data/papers/${p.id}.js`,'QB_PAPERS',p.id).questions) {
     const sig=signature(q);if(!sources.has(sig))sources.set(sig,[]);
-    if(q.classification?.version!==VERSION)throw new Error('Sync Obsidian before building website: '+q.qid);
-    const c=classify(q),{group,tag}=c,filters=[];
+    if(![VERSION,INSTITUTION_VERSION].includes(q.classification?.version))throw new Error('Sync Obsidian before building website: '+q.qid);
+    const c=classify(q),group=trainingGroup(q,c),{tag}=c,filters=[];
+    if(!SUBTYPES[group]?.includes(tag))throw new Error('Invalid Obsidian classification: '+q.qid+'/'+group+'/'+tag);
     for(const [kind,labels] of [['辅助考点',c.auxiliary],['解题方法',c.methods],['题面形式',c.forms]])for(const label of labels){
       const id=kind+'::'+(kind==='解题方法'?q.module:group)+'::'+label;
       filters.push(id);qualifiers.set(id,{id,label,group,kind,module:q.module});
@@ -35,7 +36,7 @@ export function buildTrainingIndex(client=path.join(root,'client')) {
       }
     });
   }
-  const data={version:2,taxonomyVersion:VERSION,basis:'粉笔讲义体系；先同步 Obsidian，网页读取同一逐题标注；未细分留待复核',groups,qualifiers:[...qualifiers.values()],legacyLeaves:LEGACY_LEAVES,records};
+  const data={version:2,taxonomyVersion:VERSION,sourceTaxonomies:[VERSION,INSTITUTION_VERSION],basis:'粉笔讲义与事业编原件体系；网页读取 Obsidian 逐题标注；未细分留待复核',groups,qualifiers:[...qualifiers.values()],legacyLeaves:LEGACY_LEAVES,records};
   fs.writeFileSync(path.join(client,'data/training-index.js'),'window.QB_TRAINING_INDEX='+JSON.stringify(data)+';\n');
   const classified=records.filter(r=>!r.leaf.endsWith('::未细分')).length;
   console.log(`Training index: ${records.length} unique entries, ${classified} classified, ${groups.reduce((n,g)=>n+g.leaves.length,0)} selectable tags; exact year/region source pairs`);

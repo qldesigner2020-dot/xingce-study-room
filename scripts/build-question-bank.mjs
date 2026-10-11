@@ -16,11 +16,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import vm from 'node:vm';
+import {readInstitutionBank} from './institution-bank.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const arg = name => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
 const SRC_ROOT = path.resolve(arg('source') || 'D:\\Obsidian\\开源题库');
 const OUT_ROOT = path.resolve(ROOT, arg('out') || 'client');
+// An explicitly selected published build is useful while staging newly
+// imported, unpublished notes. The same strict preservation checks still run.
+const BASELINE_ROOT=path.resolve(ROOT,arg('baseline')||'client');
+if(BASELINE_ROOT!==path.join(ROOT,'client')&&!BASELINE_ROOT.startsWith(ROOT+path.sep))throw new Error('Baseline must be inside this project');
 if (!OUT_ROOT.startsWith(ROOT + path.sep) || OUT_ROOT === SRC_ROOT) throw new Error('Output must be inside this project');
 const formatContext = {};
 vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'client/assets/exam-format.js'), 'utf8'), formatContext);
@@ -41,7 +46,7 @@ const MODULES = [
 ];
 
 /** 套卷内的模块顺序（贴近真实行测卷面顺序） */
-const MODULE_ORDER = MODULES.map(m => m.key);
+const MODULE_ORDER = [...MODULES.map(m => m.key), '综合分析'];
 
 /** 图片目录 → 站内 ASCII 目录名 */
 const IMG_DIRS = { '题目图': 'timu', '公式图': 'gongshi' };
@@ -201,6 +206,7 @@ function parseFile(absPath, moduleKey) {
 
 /** 把一段原始题目块拆成 题干 / 选项 / 答案 / 解析 */
 function buildQuestion(q, src) {
+  if (src.institution) return {...q};
   const stemLines = [];
   const options = [];
   let answer = null;
@@ -298,6 +304,10 @@ for (const mod of MODULES) {
     parsed.push(parseFile(path.join(dir, name), mod.key));
   }
 }
+parsed.push(...readInstitutionBank(SRC_ROOT,(rel,abs)=>{
+  if(referencedImages.has(rel)&&referencedImages.get(rel)!==abs)throw new Error('Image path collision: '+rel);
+  referencedImages.set(rel,abs);
+}));
 console.log(`  命中 ${parsed.length} 个模块卷文件`);
 
 // 按「试卷名」归并成套卷
@@ -311,6 +321,8 @@ for (const p of parsed) {
       region: p.meta['地区'] || '',
       examType: p.meta['考试类别'] || '',
       examClass: p.meta['事业编类别'] || '',
+      institution: !!p.institution,
+      examDate: p.meta['日期'] || '',
       byModule: new Map(),
     });
   }
@@ -338,10 +350,11 @@ for (const rec of [...papers.values()].sort((a, b) => (b.year - a.year) || a.nam
     const list = rec.byModule.get(mk);
     if (!list) continue;
     for (const q of list) {
-      questions.push(buildQuestion(q, { moduleKey: mk, absPath: q.sourceFile }));
+      questions.push(buildQuestion(q, { moduleKey: mk, absPath: q.sourceFile, institution:rec.institution }));
     }
   }
   if (!questions.length) continue;
+  if(rec.institution)questions.sort((a,b)=>a.no-b.no);
   if (new Set(questions.map(q => q.qid)).size !== questions.length) throw new Error(`卷内重复 qid：${rec.name}`);
 
   questions.forEach((q, i) => {
@@ -355,11 +368,13 @@ for (const rec of [...papers.values()].sort((a, b) => (b.year - a.year) || a.nam
 
   const types = {};
   for (const q of questions) types[q.type] = (types[q.type] || 0) + 1;
-  const moduleCounts = Object.fromEntries(MODULE_ORDER.filter(m => rec.byModule.has(m)).map(m => [m, rec.byModule.get(m).length]));
+  const moduleCounts = {};
+  for(const q of questions)moduleCounts[q.module]=(moduleCounts[q.module]||0)+1;
   // 国考 2022–2026 可核对题量。其他回忆版不凭题数或模块数量推断“完整”。
   const expectedCount = rec.region === '国考' && /国家公务员录用考试/.test(rec.name)
     ? (/副省级/.test(rec.name) ? 135 : 130) : null;
-  const coverage = {basis: '网友回忆版', sourceCount: questions.length, expectedCount,
+  const coverage = {basis: rec.institution?'所给事业编原件':'网友回忆版', sourceCount: questions.length, expectedCount,
+    missingAnswers:questions.filter(q=>q.answerStatus==='missing').length,
     missingCount: expectedCount == null ? null : Math.max(0, expectedCount - questions.length)};
 
   paperFiles.set(pid, {
@@ -367,6 +382,7 @@ for (const rec of [...papers.values()].sort((a, b) => (b.year - a.year) || a.nam
     name: rec.name,
     year: rec.year,
     region: rec.region,
+    ...(rec.examDate?{examDate:rec.examDate}:{}),
     ...examContext.TrainingTools.paperExam(rec),
     count: questions.length,
     types,
@@ -381,6 +397,7 @@ for (const rec of [...papers.values()].sort((a, b) => (b.year - a.year) || a.nam
     name: rec.name,
     year: rec.year,
     region: rec.region,
+    ...(rec.examDate?{examDate:rec.examDate}:{}),
     ...examContext.TrainingTools.paperExam(rec),
     count: questions.length,
     types,
@@ -398,7 +415,11 @@ const TYPE_ORDER = [
   '数学运算',
   '图形推理', '定义判断', '类比推理', '逻辑判断',
   '增长', '比重', '平均数', '倍数', '综合',
+  '政治常识','常识时政','常识判断','资料分析','综合分析','实验设计','策略选择',
 ];
+// A training group can differ from the original question type (e.g. a data
+// passage question whose main concept is growth). Retain both module lookups.
+if(typeCount.has('常识时政'))TYPE_MODULE['常识时政']='常识判断';
 const typesInData = [...typeCount.keys()].sort(
   (a, b) => (TYPE_ORDER.indexOf(a) + 1 || 99) - (TYPE_ORDER.indexOf(b) + 1 || 99)
 );
@@ -429,7 +450,7 @@ for (const [pid, pf] of paperFiles) {
 // remain unchanged. Abort before writing if rebuilding would alter an old item.
 let preserved = 0;
 for (const [dir, next] of [['papers', paperFiles], ['pools', new Map([...pools].map(([type, questions]) => ['q' + shortId('pool:' + type), {questions}]))]]) {
-  const baseline = path.join(ROOT, 'client/data', dir);
+  const baseline = path.join(BASELINE_ROOT, 'data', dir);
   if (!fs.existsSync(baseline)) continue;
   for (const filename of fs.readdirSync(baseline).filter(f => f !== 'index.js' && f.endsWith('.js'))) {
     const key = path.basename(filename, '.js'), context = {window: {}};
@@ -485,7 +506,7 @@ writeJs('catalog.js', 'window.QB_CATALOG = ' + jsLiteral({
   generatedAt: new Date().toISOString(),
   source: '开源题库（网友回忆版，已导入各卷全部现有模块）',
   yearRange: [MIN_YEAR, MAX_YEAR],
-  modules: MODULES.map((m) => m.key),
+  modules: MODULE_ORDER.filter(m=>catalog.some(p=>p.modules.includes(m))),
   typeOrder: typesInData,
   typeModule: TYPE_MODULE,
   totalPapers: catalog.length,

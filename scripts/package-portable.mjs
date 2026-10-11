@@ -58,6 +58,8 @@ const catalog = context.window.QB_CATALOG;
 context.window.QB_CATALOG.source = '开源题库';
 await fs.writeFile(path.join(folder, 'data/catalog.js'),
   'window.QB_CATALOG=' + JSON.stringify(catalog) + ';\n');
+for(const name of ['网站工具详细介绍与使用说明.md','我的报告与完整AI导出方案.md'])
+  await fs.copyFile(path.join(root,name),path.join(folder,name));
 
 // Browsers cannot fetch local image files as bytes. Lazy ordinary scripts provide
 // those same bytes to PDF/HTML/Markdown exporters without network or file permissions.
@@ -117,6 +119,9 @@ await fs.writeFile(path.join(folder, '使用说明.txt'), `两眼一睁就是练
 ${catalog.yearRange[0]}—${catalog.yearRange[1]} 年，${paperCount} 套试卷、${questionCount.toLocaleString('zh-CN')} 道题。
 ${catalog.modules.join('、')}，已导入原库中各卷的全部现有题目。
 网友回忆版可能有遗漏，页面“收录”题量不代表真实试卷一定完整。
+含事业编 A/B/C 类 29 套、2,900 题，扫描题使用原图；两道原件缺答案的题单列待核对。
+详细用法见「网站工具详细介绍与使用说明.md」。
+「我的报告与完整AI导出方案.md」是后续规划，新的个人报告页面尚未上线。
 
 已有功能
 真题套卷、专项训练、实时计时、暂停、手写标注、选项排除、错题本、收藏、

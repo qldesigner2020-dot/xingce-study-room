@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {classify} from './training-taxonomy.mjs';
+import {classify,trainingGroup} from './training-taxonomy.mjs';
 const read=(file,name)=>{const c={window:{}};vm.runInNewContext(fs.readFileSync(file,'utf8'),c);return c.window[name];};
 const index=read('client/data/training-index.js','QB_TRAINING_INDEX'),cat=read('client/data/catalog.js','QB_CATALOG');
 const ctx={};vm.runInNewContext(fs.readFileSync('client/assets/training-tools.js','utf8'),ctx);const tools=ctx.TrainingTools;
@@ -30,7 +30,7 @@ for(const record of index.records){
   for(const [pid,no,material,qid] of record.src){
     const q=papers.get(pid)?.questions.find(q=>q.qid===qid&&q.no===no);assert.ok(q,`exact source ${pid}/${qid}`);
     assert.equal(q.type,record.t);assert.equal(q.materialNo||0,material);
-    const c=classify(q);assert.equal(c.group+'::'+c.tag,record.leaf);
+    const c=classify(q);assert.equal(trainingGroup(q,c)+'::'+c.tag,record.leaf);
     sourceCount++;sourceKeys.add(pid+'|'+qid);
   }
 }
@@ -139,7 +139,7 @@ for(const region of ['海南','国考','安徽',''])for(const years of [['2026']
     for(const ref of sample.refs){
       const p=papers.get(ref.key);assert.ok(!region||p.region===region);assert.ok(!years.length||years.includes(String(p.year)));
       const q=p.questions.find(q=>q.qid===ref.qid);assert.ok(q&&q.no===ref.no);
-      const c=classify(q);assert.equal(c.group+'::'+c.tag,ref.leaf);
+      const c=classify(q);assert.equal(trainingGroup(q,c)+'::'+c.tag,ref.leaf);
       actual[ref.leaf]=(actual[ref.leaf]||0)+1;
     }
     for(const leaf of plan.ids)assert.equal(actual[leaf]||0,plan.allocations[leaf]);
@@ -245,7 +245,45 @@ for(const examType of ['national','provincial','institution'])for(const examClas
   for(const r of sample.refs){const e=tools.paperExam(examPapers.find(p=>p.id===r.key));assert.equal(e.examType,examType);if(examType==='institution'&&examClass)assert.equal(e.examClass,examClass);}
 }
 assert.equal(tools.plan(categoryIndex,categoryCatalog,{...examOptions,examType:'institution',examClass:'A',region:'国考',total:10}).total,0,'category and region intersect on the same original paper');
-assert.equal(tools.plan(index,cat,{...examOptions,selectedModules:['判断推理'],examType:'institution',region:'',examClass:'A'}).total,0,'pending institutions never borrow civil-service questions');
+assert.equal(tools.plan(index,cat,{...examOptions,selectedModules:['判断推理'],examType:'institution',region:'',examClass:'A'}).total,25,'institution questions are available');
+for(const examClass of ['A','B','C']){
+  const options={workflow:'exam',selectedModules:cat.modules,total:100,examType:'institution',examClass,years:['2026'],region:'',allocationSeed:25};
+  const sample=tools.sample(index,cat,options,21),original=cat.papers.filter(p=>p.examType==='institution'&&p.examClass===examClass&&p.year===2026);
+  assert.equal(original.length,1);assert.equal(sample.total,100);
+  assert.deepEqual(Object.fromEntries(Object.entries(sample.moduleAllocations).filter(([,n])=>n)),JSON.parse(JSON.stringify(original[0].moduleCounts)),'one-paper distribution follows original module counts');
+  for(const r of sample.refs)assert.equal(r.key,original[0].id,'classes never mix or borrow civil-service questions');
+}
+const b2022=tools.plan(index,cat,{workflow:'exam',selectedModules:cat.modules,total:25,examType:'institution',examClass:'B',years:['2022'],region:'全国联考'}).papers;
+assert.equal(b2022.length,2);assert.ok(b2022.every(p=>p.examDate!=='2022-09-17'),'no invented missing B-class September paper');
+const pending=statistics.summarize({refs:[{qid:'known',type:'常识判断'},{qid:'unknown',type:'常识判断'},{qid:'unanswered',type:'常识判断'}],answers:{known:{pick:'A'},unknown:{pick:'B'}}},[{qid:'known',answer:'A'},{qid:'unknown',answer:''},{qid:'unanswered',answer:'C'}]);
+assert.equal(pending.answered,2);assert.equal(pending.graded,1);assert.equal(pending.pending,1);assert.equal(pending.wrong,0);assert.equal(pending.accuracy,1);assert.equal(pending.rows[1].correct,null);
+const identity={stripTags:html=>String(html||'').replace(/<[^>]*>/g,'')};
+vm.runInNewContext(appSource.slice(appSource.indexOf('function questionKey('),appSource.indexOf('const isFavorite')),identity);
+const crop={original:true,stem:'<img src="crop.jpg">',options:['A','B','C','D'].map(k=>({k,t:k}))};
+assert.notEqual(identity.questionKey({...crop,qid:'sy-one'}),identity.questionKey({...crop,qid:'sy-two'}),'empty OCR/image-only questions must never share favorites');
+assert.equal(identity.questionKey({...crop,qid:'sy-one'}),'original:sy-one','original question identity stays tied to the stable source ID');
+// The paper selector has only whole-paper and module choices. Starting from
+// whole-paper then clicking one module isolates it; later clicks add/remove.
+const paper=cat.papers.find(p=>p.id==='pe73c52b327'),view={paperSel:{[paper.id]:new Set(Object.keys(paper.types))}};
+const selection={V:view,CAT:cat,paperById:new Map([[paper.id,paper]]),moduleOfType:statistics.moduleForTest,render:()=>{}};
+const selectStart=appSource.indexOf("  'psel-module-toggle'(e,el) {");
+const selectEnd=appSource.indexOf('  /** 从列表页直接只做某个模块 */',selectStart);
+vm.runInNewContext('globalThis.actions={'+appSource.slice(selectStart,selectEnd)+'}',selection);
+const clickModule=m=>selection.actions['psel-module-toggle'](null,{dataset:{id:paper.id,m}});
+clickModule('言语理解与表达');assert.ok([...view.paperSel[paper.id]].every(t=>statistics.moduleForTest(t)==='言语理解与表达'));
+clickModule('判断推理');assert.ok([...view.paperSel[paper.id]].some(t=>statistics.moduleForTest(t)==='判断推理'));
+clickModule('言语理解与表达');assert.ok([...view.paperSel[paper.id]].every(t=>statistics.moduleForTest(t)==='判断推理'));
+clickModule('判断推理');assert.equal(view.paperSel[paper.id].size,0);
+selection.actions['psel-all'](null,{dataset:{id:paper.id}});assert.equal(view.paperSel[paper.id].size,Object.keys(paper.types).length);
+const paperView=appSource.slice(appSource.indexOf('async function viewPaper('),appSource.indexOf('function saveCustom('));
+assert.ok(!paperView.includes('psel-type')&&!paperView.includes('psel-module-only')&&!paperView.includes('psel-none'));
+assert.ok(!paperView.includes('download-questions'),'no duplicate printable HTML export entry');
+assert.ok(paperView.includes('print-questions')&&paperView.includes('download-question-pdf'));
+const printContext={ExamFormat:{stem:x=>x}};
+vm.runInNewContext(appSource.slice(appSource.indexOf('function printableQuestion('),appSource.indexOf('function reportDocuments(')),printContext);
+const originalProjection=printContext.printableQuestion({type:'图形推理',stem:'<img src="assets/img/institution/q.jpg">',material:'材料',options:[{k:'A',t:'OCR'}],original:true,answer:'A',explanation:'解析',sourceText:{stem:'OCR'}});
+assert.equal(originalProjection.options.length,0,'original crop already includes every option; print must not duplicate OCR options');
+assert.ok(!('answer' in originalProjection)&&!('explanation' in originalProjection),'blank sheets never leak answers or personal records');
 const filterContext={CAT:{...categoryCatalog,typeOrder:['family0']},TrainingTools:tools,V:{paperFilter:{}}};
 vm.runInNewContext(appSource.slice(appSource.indexOf('function filteredPapers('),appSource.indexOf('function viewPapers(')),filterContext);
 const futureCatalog=filterContext.CAT;futureCatalog.papers=examPapers.map(p=>({...p,count:1,types:{family0:1}}));
