@@ -50,6 +50,11 @@ const create=pack=>{
 const first=create(manifest('v1'));
 await first.lifecycle('install');await first.lifecycle('activate');
 assert.equal((await first.message('STATUS')).shellReady,true);
+assert.equal((await first.message('VERSION')).version,'v1');
+assert.equal((await first.message('VERSION')).shellReady,true);
+assert.equal(await first.fetchResource('update.html'),undefined,'recovery entry stays outside the old website cache');
+assert.equal(await first.fetchResource('site-version.json'),undefined,'version checks stay online');
+assert.equal(await first.fetchResource('assets/site-update.js'),undefined,'updater code stays online');
 assert.equal((await first.message('STATUS')).complete,false);
 await first.message('DOWNLOAD','p1');
 let status=await first.message('STATUS');assert.deepEqual([...status.papers],['p1']);assert.equal(status.complete,false);

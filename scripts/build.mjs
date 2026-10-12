@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import {build} from 'esbuild';
-import {buildOffline} from './offline-build.mjs';
+import {buildOffline,buildUpdateEntry} from './offline-build.mjs';
 import {buildTrainingIndex} from './build-training-index.mjs';
 const root=process.cwd(),dist=path.resolve(root,process.env.STUDY_BUILD_DIR||'dist');
 if(!fs.existsSync(path.join(root,'client/index.html'))||!dist.startsWith(root+path.sep))throw new Error('Invalid build directory');
@@ -29,4 +29,5 @@ fs.writeFileSync(index,fs.readFileSync(index,'utf8').replace('<script src="asset
   '<script src="assets/cloud-config.js"></script>\n<script src="assets/backend.js"></script>\n<script src="assets/cloud-sync.js"></script>'));
 console.log('Built GitHub Pages app; cloud configuration: '+(config.url?'configured':'waiting'));
 buildTrainingIndex(dist);
+buildUpdateEntry(dist);
 buildOffline(dist);

@@ -6,7 +6,7 @@ import vm from 'node:vm';
 export function buildOffline(dist) {
   const walk=dir=>fs.readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(path.join(dir,e.name)):[path.join(dir,e.name)]);
   const files=walk(dist).map(p=>path.relative(dist,p).replaceAll('\\','/')).filter(p=>
-    p!=='sw.js'&&p!=='offline-manifest.json'&&p!=='.nojekyll'&&!/assets\/vendor\/(pdf-font|NotoSerif)/.test(p));
+    p!=='sw.js'&&p!=='offline-manifest.json'&&p!=='site-version.json'&&p!=='.nojekyll'&&!/assets\/vendor\/(pdf-font|NotoSerif)/.test(p));
   const resources=files.sort().map(url=>{
     const bytes=fs.readFileSync(path.join(dist,url));
     return {url,bytes:bytes.length,integrity:'sha256-'+crypto.createHash('sha256').update(bytes).digest('base64'),
@@ -27,6 +27,18 @@ export function buildOffline(dist) {
   const source=fs.readFileSync(path.join(dist,'sw.js'),'utf8');
   fs.writeFileSync(path.join(dist,'sw.js'),source.replace('/* OFFLINE_PACKAGE */ null',JSON.stringify(manifest)));
   fs.writeFileSync(path.join(dist,'offline-manifest.json'),JSON.stringify(manifest));
+  fs.writeFileSync(path.join(dist,'site-version.json'),JSON.stringify({version}));
   console.log(`Offline package: ${papers.length} papers, ${resources.length} files, ${(resources.reduce((n,f)=>n+f.bytes,0)/1048576).toFixed(1)} MB; no downloaded fonts`);
   return manifest;
+}
+
+export function buildUpdateEntry(dist){
+  const file=path.join(dist,'update.html'),source=fs.readFileSync(path.join(dist,'assets/site-update.js'),'utf8');
+  // Keep the established appearance while removing render-blocking network
+  // dependencies from the repair entry itself.
+  const html=fs.readFileSync(file,'utf8').replace(/<link rel="stylesheet" href="([^"]+)">/g,(_,url)=>
+    '<style>'+fs.readFileSync(path.join(dist,url),'utf8').replaceAll('</style','<\\/style')+'</style>');
+  const marker='<script src="assets/site-update.js?update-entry=2"></script>';
+  if(!html.includes(marker))throw new Error('Missing recovery script placeholder');
+  fs.writeFileSync(file,html.replace(marker,()=>'<script>'+source.replaceAll('</script','<\\/script')+'</script>'));
 }

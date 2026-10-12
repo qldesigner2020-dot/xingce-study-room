@@ -11,7 +11,7 @@
     "test:taxonomy": "node scripts/test-taxonomy-v2.mjs",
     "package:portable": "node scripts/package-portable.mjs",
     "test:report": "node scripts/test-study-report.mjs",
-    "test": "node scripts/test-study-report.mjs && node scripts/test-report-shards.mjs && node scripts/test-database.mjs && node scripts/test-cloud-sync.mjs && node scripts/test-multitab.mjs && node scripts/test-export.mjs && node scripts/test-mobile-ui.mjs && node scripts/test-offline.mjs && node scripts/test-question-bank.mjs && node scripts/test-taxonomy-v2.mjs && node scripts/test-training.mjs"
+    "test": "node scripts/test-site-update.mjs && node scripts/test-study-report.mjs && node scripts/test-report-shards.mjs && node scripts/test-database.mjs && node scripts/test-cloud-sync.mjs && node scripts/test-multitab.mjs && node scripts/test-export.mjs && node scripts/test-mobile-ui.mjs && node scripts/test-offline.mjs && node scripts/test-question-bank.mjs && node scripts/test-taxonomy-v2.mjs && node scripts/test-training.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.2",

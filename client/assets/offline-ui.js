@@ -1,6 +1,6 @@
 (function(){
   'use strict';
-  const supported=location.protocol!=='file:'&&window.isSecureContext&&'serviceWorker' in navigator&&'caches' in window;
+  const supported=location.protocol!=='file:'&&!new URL(location.href).searchParams.has('website-online')&&window.isSecureContext&&'serviceWorker' in navigator&&'caches' in window;
   const safe=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const mb=n=>(n/1048576).toFixed(1)+' MB';
   let registration,current,next,installPrompt,problem='',selected='all',busy=false,storage;

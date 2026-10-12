@@ -119,6 +119,8 @@ self.addEventListener('fetch',event=>{
   if(event.request.method!=='GET')return;
   const url=new URL(event.request.url);
   if(url.origin!==BASE.origin||!url.pathname.startsWith(BASE.pathname))return;
+  // Recovery must use the network, never the app version being replaced.
+  if(['update.html','site-version.json','assets/site-update.js'].some(p=>url.pathname===BASE.pathname+p))return;
   const navigation=event.request.mode==='navigate'&&(url.pathname===BASE.pathname||url.pathname===BASE.pathname+'index.html');
   const file=FILES.get(navigation?new URL('index.html',BASE).href:url.href);
   if(!file)return; // Never intercept accounts, cloud records or other sites.
@@ -134,6 +136,11 @@ self.addEventListener('message',event=>{
   const reply=value=>port?.postMessage({value});
   event.waitUntil((async()=>{
     try {
+      if(type==='VERSION'){
+        const cache=await caches.open(SHELL),core=PACKAGE.files.filter(f=>f.group==='core');
+        const present=await Promise.all(core.map(f=>cache.match(absolute(f))));
+        reply({version:PACKAGE.version,shellReady:present.every(Boolean)});return;
+      }
       if(type==='STATUS'){reply(await status());return;}
       if(type==='DOWNLOAD') {
         if(target&&target!=='all'&&!PACKAGE.papers.some(p=>p.id===target))throw new Error('试卷不存在');
