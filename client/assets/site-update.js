@@ -3,7 +3,7 @@
   'use strict';
   const status=document.getElementById('update-status'),retry=document.getElementById('update-retry'),enter=document.getElementById('update-enter');
   const preview=!/^https?:$/.test(location.protocol)||location.origin==='null'||window.origin==='null';
-  const base=new URL('./',preview?'https://baohuafen-trainer-d0dbbv55209602-1476347142.tcloudbaseapp.com/xingce-study-room/update.html':location.href),hash=location.hash.startsWith('#/')?location.hash:'#/';
+  const base=new URL('./',preview?'https://qldesigner2020-dot.github.io/xingce-study-room/update.html':location.href),hash=location.hash.startsWith('#/')?location.hash:'#/';
   let running=false,opening=false,operation;
   enter.href=new URL('?website-online='+Date.now()+hash,base).href;
   if(preview){enter.textContent='打开正式网站';enter.target='_blank';enter.rel='noopener';}

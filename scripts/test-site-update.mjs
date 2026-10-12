@@ -87,7 +87,7 @@ f=fixture({unreleased:true,fetchHang:true});await settle();await f.enter();asser
 f=fixture({offline:true});await settle();await f.enter();assert.equal(f.unregisters,0);assert.equal(f.replaces.length,0);
 for(const options of [{preview:true},{file:true}]){
   f=fixture(options);await settle();assert.equal(f.requests,0);assert.equal(f.registers,0);assert.equal(f.elements.get('update-enter').target,'_blank');
-  assert.match(f.elements.get('update-status').textContent,/网页预览/);assert.match(f.elements.get('update-enter').href,/^https:\/\/baohuafen-trainer-/);
+  assert.match(f.elements.get('update-status').textContent,/网页预览/);assert.match(f.elements.get('update-enter').href,/^https:\/\/qldesigner2020-dot.github.io\//);
   await f.enter();assert.equal(f.unregisters,0,'opaque/file previews never call forbidden service worker APIs');
 }
 assert.ok(!/localStorage|indexedDB|caches\.delete|\.clear\(/.test(source),'recovery does not touch practice data');
